@@ -2,14 +2,21 @@
 
 #include <Arduino.h>
 
+enum MODE
+{
+    DEGREES = 0,
+    RADIANS = 1
+};
+
+enum DisplayMode {
+    MODE_90_LEFT,
+    MODE_360,
+    MODE_RADIANS,
+    MODE_90_RIGHT
+};
+
 struct Display_settings
 {
-    enum MODE
-    {
-        DEGREES = 0,
-        RADIANS = 1
-    };
-    MODE mode{MODE::DEGREES};
     bool revers{false};
 };
 
@@ -28,8 +35,11 @@ public:
     void read_settings();
     void wright_settings();
 
-public:
+    Mpu_settings* get_mpu_settings();
+    Display_settings* get_display_settings();
+
+private:
     Display_settings oled_settings;
     Mpu_settings mpu_settings;
+    MODE mode{DEGREES};
 };
-

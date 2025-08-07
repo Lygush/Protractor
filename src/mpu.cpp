@@ -1,56 +1,54 @@
 #include "mpu.h"
 
-
-void MPU::init(OLED* oled_ptr)
-{
+void MPU::init(OLED* oled_ptr, Mpu_settings* settings) {
     oled = oled_ptr;
     mpu.initialize();
-   // mpu.dmpInitialize();
+    delay(5);
+    mpu.dmpInitialize();
+    delay(5);
     mpu.setDMPEnabled(true);
+    mpu.setIntDMPEnabled(true);  // Включение прерываний DMP
+    mpu.SetOLED(oled_ptr);
+    mpu_settings = settings;
 }
 
-void MPU::calibration(uint8_t strenght)
-{
-    long offsets[6];
-    long offsetsOld[6];
-    int16_t mpuGet[6];
-    // используем стандартную точность
-    mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
-    mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
-    // обнуляем оффсеты
-    mpu.setXAccelOffset(0);
-    mpu.setYAccelOffset(0);
-    mpu.setZAccelOffset(0);
-    mpu.setXGyroOffset(0);
-    mpu.setYGyroOffset(0);
-    mpu.setZGyroOffset(0);
-    delay(10);
-    //Serial.println("Calibration start. It will take about 5 seconds");
-    for (byte n = 0; n < strenght; n++) {     // 10 итераций калибровки
-        for (byte j = 0; j < 6; j++) {    // обнуляем калибровочный массив
-            offsets[j] = 0;
-        }
-        for (byte i = 0; i < 100 + BUFFER_SIZE; i++) { // делаем BUFFER_SIZE измерений для усреднения
-            mpu.getMotion6(&mpuGet[0], &mpuGet[1], &mpuGet[2], &mpuGet[3], &mpuGet[4], &mpuGet[5]);
-            if (i >= 99) {                         // пропускаем первые 99 измерений
-            for (byte j = 0; j < 6; j++) {
-                offsets[j] += (long)mpuGet[j];   // записываем в калибровочный массив
-            }
-            }
-        }
-        for (byte i = 0; i < 6; i++) {
-            offsets[i] = offsetsOld[i] - ((long)offsets[i] / BUFFER_SIZE); // учитываем предыдущую калибровку
-            if (i == 2) offsets[i] += 16384;                               // если ось Z, калибруем в 16384
-            offsetsOld[i] = offsets[i];
-        }
-        // ставим новые оффсеты
-        mpu.setXAccelOffset(offsets[0] / 8);
-        mpu.setYAccelOffset(offsets[1] / 8);
-        mpu.setZAccelOffset(offsets[2] / 8);
-        mpu.setXGyroOffset(offsets[3] / 4);
-        mpu.setYGyroOffset(offsets[4] / 4);
-        mpu.setZGyroOffset(offsets[5] / 4);
-        delay(2);
-        oled->print_progress_bar(n, strenght);
+void MPU::calibration(uint8_t strenght) {
+    mpu.CalibrateAccel(strenght, "Accel");
+    mpu.CalibrateGyro(strenght, "Gyro");
+}
+
+void MPU::calculate_angles() {
+    if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) {
+        mpu.dmpGetQuaternion(&q, fifoBuffer);
+        mpu.dmpGetGravity(&gravity, &q);
+        mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+    } else {
+        mpu.resetFIFO();
     }
+}
+
+float MPU::get_angle_radians(AXIS axis) {   
+    return ypr[axis] - ypr_zero[axis];
+}
+
+float MPU::get_angle_degrees(AXIS axis) {
+    return degrees(ypr[axis] - ypr_zero[axis]);
+}
+
+void MPU::set_zero() {
+    ypr_zero[0] = ypr[0];
+    ypr_zero[1] = ypr[1];
+    ypr_zero[2] = ypr[2];
+}
+
+void MPU::reset() {
+    mpu.resetDMP();
+    delay(5);
+    mpu.reset();
+}
+
+// Новый метод
+void MPU::set_oled(OLED* oled_ptr) {
+    oled = oled_ptr;
+    mpu.SetOLED(oled_ptr);
 }

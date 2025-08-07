@@ -36,7 +36,6 @@ THE SOFTWARE.
 */
 
 #include "MPU6050.h"
-//#include "MPU6050_6Axis_MotionApps20.h"
 
 /** Specific address constructor.
  * @param address I2C address, uses default I2C address if none is specified
@@ -3260,7 +3259,7 @@ void MPU6050::setDMPConfig2(uint8_t config) {
 /**
   @brief      Fully calibrate Gyro from ZERO in about 6-7 Loops 600-700 readings
 */
-void MPU6050::CalibrateGyro(uint8_t Loops ) {
+void MPU6050::CalibrateGyro(uint8_t Loops, char* text) {
   double kP = 0.3;
   double kI = 90;
   float x;
@@ -3268,13 +3267,13 @@ void MPU6050::CalibrateGyro(uint8_t Loops ) {
   kP *= x;
   kI *= x;
   
-  PID( 0x43,  kP, kI,  Loops);
+  PID( 0x43,  kP, kI,  Loops, text);
 }
 
 /**
   @brief      Fully calibrate Accel from ZERO in about 6-7 Loops 600-700 readings
 */
-void MPU6050::CalibrateAccel(uint8_t Loops ) {
+void MPU6050::CalibrateAccel(uint8_t Loops, char* text) {
 
 	float kP = 0.3;
 	float kI = 20;
@@ -3282,10 +3281,10 @@ void MPU6050::CalibrateAccel(uint8_t Loops ) {
 	x = (100 - map(Loops, 1, 5, 20, 0)) * .01;
 	kP *= x;
 	kI *= x;
-	PID( 0x3B, kP, kI,  Loops);
+	PID( 0x3B, kP, kI,  Loops, text);
 }
 
-void MPU6050::PID(uint8_t ReadAddress, float kP,float kI, uint8_t Loops){
+void MPU6050::PID(uint8_t ReadAddress, float kP,float kI, uint8_t Loops, char* text) {
 	uint8_t SaveAddress = (ReadAddress == 0x3B)?((getDeviceID() < 0x38 )? 0x06:0x77):0x13;
 
 	int16_t  Data;
@@ -3342,6 +3341,7 @@ void MPU6050::PID(uint8_t ReadAddress, float kP,float kI, uint8_t Loops){
 			} else Data = round((ITerm[i]) / 4);
 			I2Cdev::writeWords(devAddr, SaveAddress + (i * shift), 1, (uint16_t *)&Data);
 		}
+        oled->print_progress_bar(L,Loops, text);
 	}
 	resetFIFO();
 	resetDMP();
@@ -3369,4 +3369,9 @@ void MPU6050::PrintActiveOffsets() {
 	printfloatx("", Data[0], 5, 0, ",  ");
 	printfloatx("", Data[1], 5, 0, ",  ");
 	printfloatx("", Data[2], 5, 0, "\n");
+}
+
+void MPU6050::SetOLED(OLED *oled_ptr)
+{
+    oled = oled_ptr;
 }
