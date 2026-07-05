@@ -825,9 +825,9 @@ class MPU6050 {
         void setDMPConfig2(uint8_t config);
 
 		// Calibration Routines
-		void CalibrateGyro(uint8_t Loops = 15, char* text = "Gyro"); // Fine tune after setting offsets with less Loops.
-		void CalibrateAccel(uint8_t Loops = 15, char* text = "Accel");// Fine tune after setting offsets with less Loops.
-		void PID(uint8_t ReadAddress, float kP,float kI, uint8_t Loops, char* text);  // Does the math
+		void CalibrateGyro(uint8_t Loops = 15, const char* text = "Gyro"); // Fine tune after setting offsets with less Loops.
+		void CalibrateAccel(uint8_t Loops = 15, const char* text = "Accel");// Fine tune after setting offsets with less Loops.
+		void PID(uint8_t ReadAddress, float kP,float kI, uint8_t Loops, const char* text);  // Does the math
 		void PrintActiveOffsets(); // See the results of the Calibration
 
         void SetOLED(OLED* oled_ptr);
@@ -939,7 +939,7 @@ class MPU6050 {
         uint8_t buffer[14];
         uint8_t *dmpPacketBuffer;
         uint16_t dmpPacketSize;
-        OLED* oled;
+        OLED* oled = nullptr;
 };
 
 #endif /* _MPU6050_H_ */

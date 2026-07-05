@@ -1,7 +1,5 @@
 #pragma once
 
-#define BUFFER_SIZE 100
-
 #include "Arduino.h"
 
 #include "MPU6050.h"
@@ -11,9 +9,9 @@
 #include "settings.h"
 
 enum AXIS {
-    X = 2,
-    Y = 1,
-    Z = 0
+    X = 2,  // ypr[2] = roll  (наклон влево/вправо) — нужная ось для угломера
+    Y = 1,  // ypr[1] = pitch (наклон вперёд/назад)
+    Z = 0   // ypr[0] = yaw   (вращение в горизонтальной плоскости)
 };
 
 class MPU {
@@ -22,26 +20,37 @@ public:
     ~MPU() = default;
 
     void init(OLED* oled_ptr, Mpu_settings* settings);
-    void calibration(uint8_t strenght);
+    void calibration(uint8_t strength);
     void calculate_angles();
 
     float get_angle_radians(AXIS axis);
     float get_angle_degrees(AXIS axis);
 
     void set_zero();
+    void request_zero();               // "умное" зануление: ждём стабильности перед фиксацией
+    bool is_zeroing() const { return zero_pending; }
     void reset();
-    void set_oled(OLED* oled_ptr);  // Новый метод
+    void set_oled(OLED* oled_ptr);
 
 private:
+    void update_zero_stability();      // проверяет, устаканилось ли значение, и коммитит zero
+
     MPU6050 mpu;
 
-    uint8_t fifoBuffer[64];
+    uint8_t fifoBuffer[64]{};
     Quaternion q;
     VectorFloat gravity;
 
     float ypr[3]{};
     float ypr_zero[3]{};
 
-    Mpu_settings* mpu_settings;
-    OLED* oled;
+    // "умное" зануление
+    bool zero_pending{false};
+    float zero_last_angle{0};
+    uint32_t zero_stable_since{0};
+    static constexpr float ZERO_TOLERANCE = 0.005f;   // рад, ~0.3° допуск между кадрами
+    static constexpr uint32_t ZERO_STABLE_MS = 700;    // сколько держать стабильность перед фиксацией
+
+    Mpu_settings* mpu_settings{nullptr};
+    OLED* oled{nullptr};
 };
