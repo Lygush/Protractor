@@ -14,3 +14,13 @@ Battery_settings *Settings::get_battery_settings()
 {
     return &battery_settings;
 }
+
+Sleep_settings *Settings::get_sleep_settings()
+{
+    return &sleep_settings;
+}
+
+Target_settings *Settings::get_target_settings()
+{
+    return &target_settings;
+}

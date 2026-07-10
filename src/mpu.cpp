@@ -14,13 +14,13 @@ void MPU::init(OLED* oled_ptr, Mpu_settings* settings) {
     mpu.setZGyroOffset(83);
 
     mpu.SetOLED(oled_ptr);
-    calibration(12);
-    
+    calibration(settings->calibration_strength);
+
     mpu.dmpInitialize();
     delay(5);
     mpu.setDMPEnabled(true);
     mpu.setIntDMPEnabled(true);
-    
+
     mpu_settings = settings;
 }
 
@@ -92,4 +92,20 @@ void MPU::reset() {
 void MPU::set_oled(OLED* oled_ptr) {
     oled = oled_ptr;
     mpu.SetOLED(oled_ptr);
+}
+
+void MPU::sleep() {
+    // Явно глушим DMP и его прерывание ДО того, как усыпить сам чип —
+    // чистое, предсказуемое состояние, симметричное wake() ниже.
+    mpu.setIntDMPEnabled(false);
+    mpu.setDMPEnabled(false);
+    mpu.setSleepEnabled(true);
+}
+
+void MPU::wake() {
+    mpu.setSleepEnabled(false);
+    delay(50);   // датчику нужно время на стабилизацию генератора после сна
+    mpu.resetFIFO();
+    mpu.setDMPEnabled(true);
+    mpu.setIntDMPEnabled(true);
 }

@@ -32,6 +32,14 @@ public:
     void reset();
     void set_oled(OLED* oled_ptr);
 
+    // Энергосбережение: усыпить/разбудить сам датчик (PWR_MGMT_1 sleep bit).
+    // sleep() перед этим явно глушит DMP/прерывание, wake() их явно включает
+    // обратно — DMP не гарантированно переживает цикл сна сам по себе, было
+    // замечено, что после setSleepEnabled(false) прерывания dmp_ready могут
+    // просто не возобновиться без явного re-enable.
+    void sleep();
+    void wake();
+
 private:
     void update_zero_stability();      // проверяет, устаканилось ли значение, и коммитит zero
 
