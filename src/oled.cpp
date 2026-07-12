@@ -18,93 +18,79 @@ void OLED::init(Display_settings *disp_settings)
     oled_settings = disp_settings;
 }
 
-void OLED::print_start_page()
-{
-    // Область "глаза" на морде лягушки, которым моргаем (rect = открыт, line = закрыт).
-    static constexpr int eye_x0 = 80, eye_y0 = 16, eye_x1 = 82, eye_y1 = 18;
-
-    oled.clear();
-   // oled.drawBitmap(32, 10, frog_64x45, 64, 45);
-    oled.rect(eye_x0, eye_y0, eye_x1, eye_y1);
-    oled.update();
-    delay(400);
-
-    // Полная область глаза очищается перед каждой перерисовкой (а не только
-    // часть с линией, как было раньше) — иначе не совпадающая по размеру
-    // область clear() могла оставлять лишние пиксели поверх реально
-    // перерисовываемой зоны.
-    oled.clear(eye_x0, eye_y0, eye_x1, eye_y1);
-    oled.line(eye_x0, 17, eye_x1, 17);
-    oled.update(eye_x0, eye_y0, eye_x1, eye_y1);
-    delay(400);
-
-    oled.clear(eye_x0, eye_y0, eye_x1, eye_y1);
-    oled.rect(eye_x0, eye_y0, eye_x1, eye_y1);
-    oled.update(eye_x0, eye_y0, eye_x1, eye_y1);
-    delay(400);
-}
-
-// Отрисовка батареи готовыми иконками (8x8, см. icons.h) вместо ручной
-// геометрии — сильно легче по коду, чем прежний вариант через rect()/line():
-// один drawBitmap() вместо цикла отрисовки сегментов + отдельная логика молнии.
-// Иконка высотой 12px реально пересекает границу страниц дисплея (страница 0:
-// y0-7, страница 1: y8-11) — GyverOLED сам делает два прохода записи, это не
-// требует отдельной обработки с нашей стороны.
-//
-// blink_visible=false — фаза "погашено" при мигании в LOW_BATTERY: область
-// просто очищается, ничего не рисуем.
-//
-// ПРИМЕЧАНИЕ: отдельной иконки для CHARGING сейчас нет — используется обычная
-// иконка по проценту. Если понадобится визуально отличать зарядку, можно
-// нарисовать ещё одну 8x8 иконку (например, с "+") и добавить сюда ветку —
-// это тот же drawBitmap(), просто с другим указателем.
 void OLED::update_battery(bool blink_visible)
 {
-    const int x = 0, y = 0;                 // ровно страница 0 — без сдвигов
-    const int w = 27, h = 12;
+    const int x = 0, y = 0;
+    const int w = 25, h = 12;
+
+    if (battery_state == BatteryState::LOW_BATTERY && !blink_visible) {
+        oled.clear(x, y, x + w, y + h);
+        oled.update(x, y, x + w, y + h);
+        // При следующей фазе "включено" нужно гарантированно перерисовать
+        // иконку, даже если число сегментов не изменилось.
+        last_drawn_battery_segments = -1;
+        return;
+    }
+
+    // 0..5 сегментов, пропорционально проценту заряда (каждый сегмент = 20%),
+    // с округлением к ближайшему: 0-9%->0, 10-29%->1, ..., 90-100%->5.
+    uint8_t segments_lit = (uint16_t(battery_percent) * 5 + 50) / 100;
+    if (segments_lit > 5) segments_lit = 5;
+
+    // Экран не трогаем, если картинка не изменится — так апдейт (вызываемый
+    // на любое изменение процента) не дёргает дисплей, пока не изменится
+    // именно видимое число сегментов.
+    if (segments_lit == last_drawn_battery_segments) return;
+    last_drawn_battery_segments = segments_lit;
 
     oled.clear(x, y, x + w, y + h);
 
-    if (battery_state == BatteryState::LOW_BATTERY && !blink_visible) {
-        oled.update(x, y, x + w, y + h);
-        return;                              // фаза "погашено" при мигании — пусто
+    // Контур рисуется всегда — он же определяет "пустые" (незажжённые) слоты.
+    oled.drawBitmap(x, y, battery_outline_25x12, w, h);
+
+    static constexpr uint8_t SEG_W    = 3;
+    static constexpr uint8_t SEG_H    = 12; // одна страница — см. комментарий у battery_segment_3x8
+    static constexpr uint8_t SEG_X0   = 2; // первый слот, с 1px отступом от рамки
+    static constexpr uint8_t SEG_STEP = SEG_W + 1; // ширина сегмента + 1px зазор
+
+    for (uint8_t i = 0; i < segments_lit; i++) {
+        int seg_x = x + SEG_X0 + i * SEG_STEP;
+        oled.drawBitmap(seg_x, y, battery_segment_3x12, SEG_W, SEG_H);
     }
 
-    const uint8_t* icon;
-    if      (battery_percent >= 90) icon = battery_100_27x12;
-    else if (battery_percent >= 65) icon = battery_75_27x12;
-    else if (battery_percent >= 40) icon = battery_50_27x12;
-    else if (battery_percent >= 15) icon = battery_25_27x12;
-    else                             icon = battery_0_27x12;
-
-    oled.drawBitmap(x, y, icon, w, h);
     oled.update(x, y, x + w, y + h);
+}
+
+// Общие подписи внизу экрана (x=0/52/100, строка 7) — раньше три одинаковых
+// setCursor+print были продублированы в print_base_page_common(),
+// print_menu_page() и print_target_edit_page().
+void OLED::print_footer_labels(const __FlashStringHelper* left,
+                                const __FlashStringHelper* mid,
+                                const __FlashStringHelper* right)
+{
+    oled.setCursor(0, 7);
+    oled.print(left);
+    oled.setCursor(52, 7);
+    oled.print(mid);
+    oled.setCursor(100, 7);
+    oled.print(right);
 }
 
 void OLED::print_base_page_common()
 {
-    update_battery();                       // рисуем батарею с актуальным процентом
+    update_battery();
     oled.setScale(1);
-    oled.setCursor(0, 7);
-    oled.print(F("zero"));
-    oled.setCursor(52, 7);                  // (128 - 4 симв. * 6px) / 2 = 52 — центр строки
-    oled.print(F("mode"));
-    oled.setCursor(100, 7);
-    oled.print(F("menu"));
+    print_footer_labels(F("zero"), F("mode"), F("menu"));
     oled.update();
 }
 
 void OLED::print_progress_bar(uint8_t actual_section, uint8_t full_bar, const char* text)
 {
-    // Строка текста "Calibrate ..." — page 1 (y 8-15 в пикселях).
     static constexpr int text_x0 = 0, text_y0 = 8, text_x1 = 127, text_y1 = 15;
 
     if (actual_section == 0) {
         oled.clear();
     } else {
-        // Очищаем строку с текстом перед каждой перерисовкой — иначе если новый
-        // текст короче предыдущего (например, "Gyro" после "Accel"), хвост
-        // старой надписи оставался бы виден.
         oled.clear(text_x0, text_y0, text_x1, text_y1);
     }
     oled.setCursor(0, 1);
@@ -114,25 +100,10 @@ void OLED::print_progress_bar(uint8_t actual_section, uint8_t full_bar, const ch
     oled.update();
 
     if (actual_section == 0) {
-        // Было три вложенных roundRect со сдвигом в 1px (имитация толстой рамки) —
-        // скруглённые углы трёх разных по размеру прямоугольников не совпадали
-        // друг с другом и давали на стыках непонятные "чёрточки". Обычный rect()
-        // без скругления рисует ровную рамку без этого артефакта.
         oled.rect(3, 25, 125, 45, OLED_STROKE);
         oled.update();
     } else {
-        // Правый край считаем пропорционально от общей ширины (120px) на
-        // каждый вызов, а не накоплением через целочисленный
-        // segment_lenght = 120/full_bar. Целочисленное деление округляет
-        // вниз, и если full_bar не делит 120 нацело, бар на последнем шаге
-        // не дотягивался до правой границы (124) — визуально "обрезан".
         int right_edge = 4 + (120 * (actual_section + 1)) / full_bar;
-
-        // rect() вместо roundRect(): на небольшой высоте (20px), особенно
-        // при маленькой ширине в начале калибровки, скругление угла у
-        // roundRect() съедало пиксели прямо у края заливки — бар выглядел
-        // так, будто не доходит ни до начала, ни до конца. Обычный
-        // прямоугольник без скругления заливает ровно от x=4 до right_edge.
         oled.rect(4, 25, right_edge, 45);
         oled.update();
     }
@@ -145,7 +116,64 @@ void OLED::change_revers()
     oled.flipH(revers);
 }
 
-// Отправка текста в зону чисел (страницы 2-5, высота 32 пикселя)
+void OLED::apply_brightness(BrightnessLevel level)
+{
+    uint8_t contrast;
+    switch (level) {
+        case BrightnessLevel::DIM:    contrast = 20;  break;
+        case BrightnessLevel::MEDIUM: contrast = 120; break;
+        case BrightnessLevel::BRIGHT:
+        default:                      contrast = 255; break;
+    }
+    oled.setContrast(contrast);
+}
+
+// Исправленная функция меню с инверсией и подписями кнопок
+void OLED::print_menu_page(const char* const lines[], uint8_t line_count, uint8_t cursor_index)
+{
+    oled.clear();
+    oled.setScale(1);
+
+    for (uint8_t i = 0; i < line_count; i++) {
+        oled.setCursor(0, i);
+        if (i == cursor_index) {
+            oled.invertText(true);
+            oled.print(lines[i]);
+            oled.invertText(false);
+        } else {
+            oled.print(lines[i]);
+        }
+    }
+
+    // Подписи кнопок внизу (строка 7)
+    print_footer_labels(F("^"), F("v"), F("OK"));
+    oled.update();
+}
+
+void OLED::print_calibration_countdown(uint8_t number)
+{
+    oled.clear();
+    oled.setScale(1);
+    oled.setCursor(7, 1);
+    oled.print(F("Place flat & still"));
+    oled.update();
+
+    char buf[2];
+    buf[0] = char('0' + number);
+    buf[1] = '\0';
+    send_num_buffer(buf);
+}
+
+void OLED::print_calibration_message(const char* msg)
+{
+    oled.clear();
+    oled.setScale(1);
+    // Просто печатаем по центру (грубо, без strlen)
+    oled.setCursor(20, 3);
+    oled.print(msg);
+    oled.update();
+}
+
 void OLED::send_num_buffer(const char* text) {
     static constexpr int bufX0 = 0, bufY0 = 16, bufX1 = 127, bufY1 = 47;
     static constexpr int vOffset = 3;
@@ -164,20 +192,11 @@ void OLED::send_num_buffer(const char* text) {
     oled.setWindow(0, 0, 127, 7);
 }
 
-// Печать "left.right" с точкой строго по центру экрана. left печатается
-// заканчиваясь ровно в DOT_X (право-выравнивание до точки), right — сразу
-// после неё. За счёт этого точка и минус всегда на одном и том же месте,
-// независимо от того, сколько цифр реально показывается слева/справа —
-// в отличие от send_num_buffer(), где паддинг общий на всю строку и при
-// смене числа значащих цифр сдвигает даже те символы, которые не менялись.
-//
-// const char* вместо String — не тянем за собой класс String целиком
-// (динамическая память/конкатенации), которого больше нигде в проекте нет.
 void OLED::send_split_num_buffer(const char* left, const char* right) {
     static constexpr int bufX0 = 0, bufY0 = 16, bufX1 = 127, bufY1 = 47;
     static constexpr int vOffset = 3;
-    static constexpr int CHAR_W = 6 * 3;              // ширина символа при setScale(3)
-    static constexpr int DOT_X  = (128 - CHAR_W) / 2; // точка по центру экрана
+    static constexpr int CHAR_W = 6 * 3;
+    static constexpr int DOT_X  = (128 - CHAR_W) / 2;
 
     bool ok = oled.createBuffer(bufX0, bufY0, bufX1, bufY1, 0);
     if (!ok) return;
@@ -205,6 +224,7 @@ void OLED_Degrees_360::print_base_page()
     oled.clear();
     print_base_page_common();
     oled.drawBitmap(47, 0, mode_360_34x14, 34, 14);
+    oled.drawBitmap(110, 0, circle_15x15, 15, 15);
     oled.update();
 }
 
@@ -213,15 +233,14 @@ void OLED_Degrees_360::update_angle_value(float angle)
     angle = degrees(angle);
     if (angle < 0) angle += 360;
 
-    // Целые градусы (десятые больше не нужны) + фиксированная ширина 3 символа
-    // (dtostrf выравнивает по правому краю пробелами) — иначе при переходе
-    // между 1/2/3-значными числами текст "прыгал" из-за перецентровки
-    // в send_num_buffer() по длине строки.
     int deg = (int)(angle + 0.5f);
-    if (deg >= 360) deg = 0;   // округление могло дать 360 у самой границы
+    if (deg >= 360) deg = 0;
 
-    char buf[5];
-    dtostrf((float)deg, 3, 0, buf);
+    char buf[4];
+    buf[0] = (deg >= 100) ? char('0' + deg / 100)       : ' ';
+    buf[1] = (deg >= 10)  ? char('0' + (deg / 10) % 10) : ' ';
+    buf[2] = char('0' + deg % 10);
+    buf[3] = '\0';
     send_num_buffer(buf);
 }
 
@@ -231,9 +250,8 @@ void OLED_Degrees_90::print_base_page()
 {
     oled.clear();
     print_base_page_common();
-    // Иконка 24px шириной: (128-24)/2 = 52. Раньше стояло 47 (значение,
-    // верное для 34px-иконки режима 360) — из-за этого иконка была смещена влево.
     oled.drawBitmap(52, 0, mode_90_24x14, 24, 14);
+    oled.drawBitmap(110, 0, circle_15x15, 15, 15);
     oled.update();
 }
 
@@ -248,17 +266,13 @@ void OLED_Degrees_90::update_angle_value(float angle)
 
     int whole = (int)a;
     int dec = (int)((a - whole) * 10.0f + 0.5f);
-    if (dec >= 10) { dec = 0; whole++; }   // перенос разряда из-за округления
+    if (dec >= 10) { dec = 0; whole++; }
 
-    if (whole == 0 && dec == 0) negative = false;  // не показываем "-0.0"
+    if (whole == 0 && dec == 0) negative = false;
 
     int tens = whole / 10;
     int ones = whole % 10;
 
-    // Фиксированные колонки: [знак][десятки][единицы] — пробел вместо
-    // отсутствующего знака/десятков, а не убранная позиция. Так минус и
-    // все цифры всегда в одних и тех же местах на экране, в т.ч. когда
-    // число переходит с одной значащей цифры на две (9.9 -> 10.0).
     char left[4];
     left[0] = negative ? '-' : ' ';
     left[1] = (tens > 0) ? char('0' + tens) : ' ';
@@ -289,15 +303,13 @@ void OLED_Radians::update_angle_value(float angle)
     bool negative = angle < 0;
     float a = fabs(angle);
 
-    int whole = (int)a;                    // диапазон ypr — доли пи, одна цифра до точки
+    int whole = (int)a;
     int dec = (int)((a - whole) * 10.0f + 0.5f);
-    if (dec >= 10) { dec = 0; whole++; }   // перенос разряда из-за округления
-    if (whole > 9) whole = 9;              // защитный клэмп на случай выхода за диапазон
+    if (dec >= 10) { dec = 0; whole++; }
+    if (whole > 9) whole = 9;
 
-    if (whole == 0 && dec == 0) negative = false;  // не показываем "-0.0"
+    if (whole == 0 && dec == 0) negative = false;
 
-    // Фиксированные колонки: [знак][цифра] — та же логика, что и в режиме 90:
-    // минус и точка не двигаются независимо от значения.
     char left[3];
     left[0] = negative ? '-' : ' ';
     left[1] = char('0' + whole);
@@ -316,13 +328,10 @@ void OLED_Degrees_90_Target::print_base_page()
 {
     oled.clear();
     print_base_page_common();
-    // Своей иконки для этого режима пока нет (сделаешь позже) — временно
-    // текстовая метка по центру верхней области, там же, где иконка режима
-    // в остальных вариантах. "90 TGT" — 6 символов * 6px (scale1) = 36px,
-    // центр (128-36)/2 = 46.
     oled.setScale(1);
     oled.setCursor(46, 1);
-    oled.print(F("90 TGT"));
+    oled.print(F("90 TGT")); //показывать целевой угол.
+    oled.drawBitmap(110, 0, circle_15x15, 15, 15);
     oled.update();
 }
 
@@ -331,32 +340,18 @@ void OLED_Degrees_90_Target::print_target_edit_page()
     oled.clear();
     update_battery();
     oled.setScale(1);
-    // Те же позиции, что у "zero"/"mode"/"menu" в print_base_page_common() —
-    // над теми же физическими кнопками (zero_btn=▲, mode_btn=▼, menu_btn=OK).
-    // Настоящих значков стрелок нет — "^"/"v" как временная замена.
-    oled.setCursor(0, 7);
-    oled.print(F("^"));
-    oled.setCursor(52, 7);
-    oled.print(F("v"));
-    oled.setCursor(100, 7);
-    oled.print(F("OK"));
+    print_footer_labels(F("^"), F("v"), F("OK"));
     oled.update();
 }
 
 void OLED_Degrees_90_Target::update_target_edit(bool negative, uint8_t tens, uint8_t ones, uint8_t dec,
                                                  uint8_t cursor_pos, bool digit_visible)
 {
-    // В режиме ввода разряды показываются явно (в т.ч. знак "+" и ведущий
-    // ноль десятков) — в отличие от обычного отображения угла, где пустая
-    // позиция скрывается пробелом. Здесь это экран настройки, а не живые
-    // показания, так что явные "+05.0" читаются понятнее.
     char sign_ch = negative ? '-' : '+';
     char tens_ch = char('0' + tens);
     char ones_ch = char('0' + ones);
     char dec_ch  = char('0' + dec);
 
-    // Мигание текущего (редактируемого) разряда — блок гасится на "невидимой"
-    // фазе, ровно как и остальные виды мигания в проекте (LOW_BATTERY и т.п.).
     if (!digit_visible) {
         switch (cursor_pos) {
             case 0: sign_ch = ' '; break;

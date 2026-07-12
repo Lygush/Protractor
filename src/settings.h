@@ -9,9 +9,33 @@ enum DisplayMode {
     MODE_RADIANS
 };
 
+// Уровень громкости зуммера. Полноценной аналоговой громкости на пассивной
+// пищалке, подключённой напрямую к пину, не сделать (нет транзистора/ЦАП) —
+// поэтому QUIET реализован не как "тише", а как более короткий сигнал
+// (короче звучит менее навязчиво). Честная эмуляция, не настоящая громкость.
+enum class SoundLevel : uint8_t {
+    OFF,
+    QUIET,
+    NORMAL
+};
+
+// Яркость экрана — ступени контраста SSD1306 (см. OLED::apply_brightness()).
+// ВАЖНО: не называть значения "LOW"/"HIGH" — те же макросы Arduino.h (см.
+// предупреждение у BatteryState ниже), препроцессор их подставит как числа.
+enum class BrightnessLevel : uint8_t {
+    DIM,
+    MEDIUM,
+    BRIGHT
+};
+
 struct Display_settings
 {
-    bool revers{false};
+    BrightnessLevel brightness{BrightnessLevel::BRIGHT};
+};
+
+struct Sound_settings
+{
+    SoundLevel level{SoundLevel::NORMAL};
 };
 
 // Состояние батареи. Лежит в settings.h (а не в battery.h), чтобы им мог
@@ -75,6 +99,28 @@ struct Target_settings
     float tolerance_deg{1.0f};      // |текущий угол - уставка| <= допуск -> "достигнуто"
 };
 
+// ─── Персистентные настройки (EEPROM) ──────────────────────────────────────
+// Сюда попадает только то, что реально имеет смысл сохранять между
+// включениями (пользовательские предпочтения). Калибровка MPU сюда не
+// входит — она разовое действие и и так прогоняется заново при каждом
+// включении через CalibrateAccel()/CalibrateGyro().
+//
+// magic — байт-метка "тут лежат наши данные, а не мусор/заводская EEPROM".
+// checksum — простой XOR всех байт структуры до него самого; не претендует
+// на криптостойкость, только чтобы отличить частично побитую запись
+// (например, из-за отключения питания посреди записи) от валидной.
+struct PersistedSettings
+{
+    static constexpr uint8_t MAGIC = 0xA5;
+
+    uint8_t  magic{MAGIC};
+    SoundLevel      sound_level{SoundLevel::NORMAL};
+    BrightnessLevel brightness{BrightnessLevel::BRIGHT};
+    uint32_t sleep_timeout_ms{30000};
+    float    target_tolerance_deg{1.0f};
+    uint8_t  checksum{0};
+};
+
 class Settings 
 {
 public:
@@ -86,6 +132,19 @@ public:
     Battery_settings* get_battery_settings();
     Sleep_settings*   get_sleep_settings();
     Target_settings*  get_target_settings();
+    Sound_settings*   get_sound_settings();
+
+    // Загружает сохранённые пользовательские настройки из EEPROM в
+    // соответствующие поля (display/sound/sleep/target). Если EEPROM пуста
+    // или повреждена (magic/checksum не совпали) — оставляет значения по
+    // умолчанию (уже стоящие в полях структур) и сама их туда же сохраняет,
+    // чтобы следующая загрузка была валидной.
+    void load_persisted();
+
+    // Сохраняет текущие пользовательские настройки в EEPROM. Через
+    // eeprom_update_* — реально пишутся только изменившиеся байты, поэтому
+    // вызывать не страшно (в разумных пределах, не каждый тик loop()).
+    void save_persisted();
 
 private:
     Display_settings oled_settings;
@@ -93,4 +152,5 @@ private:
     Battery_settings battery_settings;
     Sleep_settings sleep_settings;
     Target_settings target_settings;
+    Sound_settings sound_settings;
 };

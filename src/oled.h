@@ -13,7 +13,6 @@ public:
     virtual ~OLED() = default;
 
     void init(Display_settings* disp_settings);
-    void print_start_page();
 
     // Рисует иконку батареи. blink_visible=false используется для фазы "погашено"
     // при мигании в состоянии LOW_BATTERY (см. вызывающий код в main.cpp).
@@ -30,6 +29,20 @@ public:
     // Включить/выключить сам дисплей (команда SSD1306 DISPLAYON/OFF) —
     // в отличие от clear(), реально гасит матрицу и её питание.
     void set_power(bool on) { oled.setPower(on); }
+
+    // Яркость через контраст SSD1306 — три фиксированные ступени, см. .cpp.
+    void apply_brightness(BrightnessLevel level);
+
+    // Общий рендер списка пунктов меню — каждая строка уже полностью
+    // отформатирована вызывающим кодом (main.cpp), в т.ч. текст значения.
+    // Эта функция только рисует список и отмечает текущий пункт "> ".
+    void print_menu_page(const char* const lines[], uint8_t line_count, uint8_t cursor_index);
+
+    // Экран калибровки: обратный отсчёт (0-9) большими цифрами + инструкция.
+    void print_calibration_countdown(uint8_t number);
+
+    // Короткое центрированное сообщение (например "CALIBRATING..."/"DONE").
+    void print_calibration_message(const char* msg);
 
     template<typename T>
     void print_debug(T value, int x, int y, bool clr) {
@@ -51,12 +64,25 @@ protected:
     // значащих цифр в числе (напр. переход 9.9 -> 10.0 не сдвигает ничего).
     void send_split_num_buffer(const char* left, const char* right);
 
+    // Общий рендер трёх подписей внизу экрана (позиции x=0/52/100, строка 7).
+    // Используется и для базового экрана (zero/mode/menu), и для меню и
+    // экрана ввода уставки (^/v/OK) — раньше это был дублированный код в
+    // трёх местах с одинаковыми F()-литералами "^"/"v"/"OK".
+    void print_footer_labels(const __FlashStringHelper* left,
+                              const __FlashStringHelper* mid,
+                              const __FlashStringHelper* right);
+
     GyverOLED<SSD1306_128x64, OLED_NO_BUFFER> oled;
     Display_settings* oled_settings{nullptr};
     bool revers{false};
 
     uint8_t      battery_percent{0};
     BatteryState battery_state{BatteryState::NORMAL};
+
+    // Кэш последней отрисовки батареи — чтобы не дёргать экран, если
+    // изменился только процент внутри той же "пятой доли" (0-5 сегментов),
+    // а видимая картинка не изменилась бы. -1 = ещё ни разу не рисовали.
+    int8_t last_drawn_battery_segments{-1};
 };
 
 class OLED_Degrees_360 : public OLED {

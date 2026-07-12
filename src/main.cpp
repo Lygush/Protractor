@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <GyverButton.h>
 #include <new>
+#include <string.h>
 #include "settings.h"
 #include "oled.h"
 #include "mpu.h"
@@ -8,16 +9,12 @@
 #include "sleep_manager.h"
 
 // Раскомментируй, чтобы видеть напряжение/процент/состояние батареи в Serial.
-// По умолчанию выключено: #ifdef убирает код ещё на этапе препроцессора
-// (не просто "не выполняется", а вообще не попадает в прошивку) — экономит флеш.
 // #define BATTERY_DEBUG
 
 // Раскомментируй, чтобы видеть в Serial отладочные "Free RAM"/"OLED: creating..."
-// и т.п. — это диагностика с самых первых сессий bring-up платы, уже отслужившая
-// своё в обычной работе. По умолчанию выключено — экономит флеш.
 // #define SETUP_DEBUG
 
-// ─── Статический буфер для OLED — никаких new/delete из кучи ───────────────
+// ─── Статический буфер для OLED ───────────────────────────────────────────────
 union OledStorage {
     OLED_Degrees_90        d90;
     OLED_Degrees_90_Target d90_target;
@@ -38,25 +35,21 @@ GButton  zero_btn(8);
 
 OLED* oled = nullptr;
 
-// Указатель на текущий OLED-объект в его "родном" типе — нужен только пока
-// активен MODE_90_TARGET, чтобы вызывать специфичные для этого режима методы
-// (print_target_edit_page()/update_target_edit()), которых нет в базовом OLED.
-// nullptr во всех остальных режимах.
+// Указатель на текущий OLED-объект в его "родном" типе
 OLED_Degrees_90_Target* target_oled = nullptr;
 
 volatile bool mpu_flag = false;
 
 // ─── Цикл режимов отображения ──────────────────────────────────────────────
-// Порядок переключения по клику mode_btn (вперёд) / удержанию mode_btn (назад).
 static constexpr DisplayMode MODE_CYCLE[] = { MODE_90, MODE_90_TARGET, MODE_360, MODE_RADIANS };
 static constexpr uint8_t     MODE_COUNT   = sizeof(MODE_CYCLE) / sizeof(MODE_CYCLE[0]);
 
 DisplayMode current_mode = MODE_90;
-uint8_t     mode_index   = 0;   // индекс current_mode в MODE_CYCLE
+uint8_t     mode_index   = 0;
 
 // ─── Ввод уставки угла (режим MODE_90_TARGET) ──────────────────────────────
 bool    editing_target   = false;
-uint8_t edit_cursor       = 0;      // 0=знак, 1=десятки, 2=единицы, 3=десятая доля
+uint8_t edit_cursor       = 0;
 bool    edit_negative     = false;
 uint8_t edit_tens         = 0;
 uint8_t edit_ones         = 0;
@@ -66,52 +59,65 @@ bool     edit_blink_visible = true;
 uint32_t edit_blink_timer   = 0;
 static constexpr uint32_t EDIT_BLINK_INTERVAL_MS = 400;
 
-// Достигнут ли сейчас целевой угол (актуально только для MODE_90_TARGET
-// вне режима редактирования) — используется и для светодиода, и для бипа.
 bool target_reached = false;
 
-// ─── Зуммер (D3) ────────────────────────────────────────────────────────
-// Своя простая генерация прямоугольного сигнала вместо Arduino tone()/
-// noTone() — они тянут за собой немало флеша (таймер, таблицы регистров под
-// несколько пинов), а нам нужна ровно одна частота на одном пине.
-//
-// Полностью неблокирующая версия: start_beep() только "взводит" зуммер,
-// а update_buzzer() (вызывается каждую итерацию loop()) переключает пин по
-// micros() и сам выключает зуммер по истечении длительности. millis() тут
-// не подходит — период на 2кГц (500мкс) меньше его разрешения (1мс).
-static constexpr uint16_t BUZZER_FREQ_HZ        = 2000;             // частота писка — подбери под свою пищалку
-static constexpr uint32_t BUZZER_DURATION_US    = 150000UL;         // 150мс
-static constexpr uint32_t BUZZER_HALF_PERIOD_US = 1000000UL / BUZZER_FREQ_HZ / 2;
-static constexpr uint8_t  BUZZER_PIN = D3;
+// ─── Меню настроек ──────────────────────────────────────────────────────
+enum class MenuItem : uint8_t {
+    CALIBRATE = 0,
+    SOUND,
+    BRIGHTNESS,
+    SLEEP_TIMEOUT,
+    EXIT,
+    COUNT
+};
+static constexpr uint8_t MENU_ITEM_COUNT = (uint8_t)MenuItem::COUNT;
 
-bool     buzzer_active         = false;
-bool     buzzer_pin_high       = false;
-uint32_t buzzer_start_us       = 0;
-uint32_t buzzer_last_toggle_us = 0;
+bool    menu_open          = false;
+bool    menu_editing_value = false;
+uint8_t menu_cursor        = 0;
 
-void start_beep() {
-    buzzer_active         = true;
-    buzzer_pin_high       = true;
-    buzzer_start_us       = micros();
-    buzzer_last_toggle_us = buzzer_start_us;
-    digitalWrite(BUZZER_PIN, HIGH);
+static constexpr uint32_t SLEEP_TIMEOUT_OPTIONS_MS[] = { 15000UL, 30000UL, 60000UL, 120000UL };
+static constexpr uint8_t  SLEEP_TIMEOUT_OPTIONS_COUNT =
+    sizeof(SLEEP_TIMEOUT_OPTIONS_MS) / sizeof(SLEEP_TIMEOUT_OPTIONS_MS[0]);
+static const char* const SLEEP_TIMEOUT_LABELS[] = { "15s", "30s", "60s", "120s" };
+
+char        menu_line_buf[MENU_ITEM_COUNT][20];
+const char* menu_line_ptrs[MENU_ITEM_COUNT];
+
+// ─── Зуммер (D3) ──────────────────────────────────────────────────────────
+static constexpr uint8_t  BUZZER_PIN                = D3;
+static constexpr uint16_t BUZZER_FREQ_HZ            = 2000;
+static constexpr uint16_t BUZZER_DURATION_NORMAL_MS = 150;
+static constexpr uint16_t BUZZER_DURATION_QUIET_MS  = 60;
+
+volatile uint16_t buzzer_toggle_count  = 0;
+volatile uint16_t buzzer_toggle_target = 0;
+
+ISR(TIMER2_COMPA_vect) {
+    PORTD ^= (1 << PD3);
+    if (++buzzer_toggle_count >= buzzer_toggle_target) {
+        TIMSK2 &= ~(1 << OCIE2A);
+        PORTD  &= ~(1 << PD3);
+    }
 }
 
-void update_buzzer() {
-    if (!buzzer_active) return;
+void start_beep() {
+    SoundLevel level = settings.get_sound_settings()->level;
+    if (level == SoundLevel::OFF) return;
 
-    uint32_t now = micros();
-    if (now - buzzer_start_us >= BUZZER_DURATION_US) {
-        digitalWrite(BUZZER_PIN, LOW);
-        buzzer_active = false;
-        return;
-    }
+    uint16_t duration_ms = (level == SoundLevel::QUIET) ? BUZZER_DURATION_QUIET_MS
+                                                          : BUZZER_DURATION_NORMAL_MS;
 
-    if (now - buzzer_last_toggle_us >= BUZZER_HALF_PERIOD_US) {
-        buzzer_last_toggle_us = now;
-        buzzer_pin_high = !buzzer_pin_high;
-        digitalWrite(BUZZER_PIN, buzzer_pin_high ? HIGH : LOW);
-    }
+    TCCR2A = (1 << WGM21);
+    TCCR2B = (1 << CS22);
+    OCR2A  = (uint8_t)(F_CPU / 64UL / (2UL * BUZZER_FREQ_HZ)) - 1;
+
+    buzzer_toggle_count  = 0;
+    buzzer_toggle_target = (uint16_t)((2UL * (uint32_t)BUZZER_FREQ_HZ * duration_ms) / 1000UL);
+
+    TCNT2  = 0;
+    TIFR2 |= (1 << OCF2A);
+    TIMSK2 |= (1 << OCIE2A);
 }
 
 // ─── ISR ───────────────────────────────────────────────────────────────────
@@ -119,7 +125,7 @@ void dmp_ready() {
     mpu_flag = true;
 }
 
-// ─── RAM (только для диагностики bring-up, см. SETUP_DEBUG) ───────────────
+// ─── RAM (только для диагностики) ────────────────────────────────────────
 #ifdef SETUP_DEBUG
 extern int   __bss_end;
 extern void* __brkval;
@@ -141,10 +147,7 @@ OledStorage& get_storage() {
 }
 
 // ─── Battery -> OLED ─────────────────────────────────────────────────────
-// Battery отдаёт только факты (процент + состояние). OLED умеет рисовать
-// сегменты, значок молнии (CHARGING) и мигать контуром (LOW_BATTERY) —
-// но какую фазу мигания показать прямо сейчас, решает main (blink_visible).
-bool blink_visible = true;   // текущая фаза мигания для LOW_BATTERY
+bool blink_visible = true;
 
 void apply_battery_to_oled() {
     oled->set_battery_percent(battery.get_percent());
@@ -164,10 +167,7 @@ void apply_battery_to_oled() {
 #endif
 }
 
-// ─── Уставка угла: разбор float <-> разряды (знак/десятки/единицы/десятая) ─
-// Формат идентичен тому, что использует OLED_Degrees_90::update_angle_value()
-// для живого отображения — так введённое значение и показания угла на экране
-// визуально сопоставимы напрямую.
+// ─── Уставка угла: разбор float <-> разряды ──────────────────────────────
 void decompose_angle_90(float angle, bool& negative, uint8_t& tens, uint8_t& ones, uint8_t& dec) {
     negative = angle < 0;
     float a = fabs(angle);
@@ -175,7 +175,7 @@ void decompose_angle_90(float angle, bool& negative, uint8_t& tens, uint8_t& one
 
     int whole = (int)a;
     int d = (int)((a - whole) * 10.0f + 0.5f);
-    if (d >= 10) { d = 0; whole++; }   // перенос разряда из-за округления
+    if (d >= 10) { d = 0; whole++; }
     if (whole > 99) whole = 99;
 
     tens = whole / 10;
@@ -188,8 +188,6 @@ float recompose_angle_90(bool negative, uint8_t tens, uint8_t ones, uint8_t dec)
     return negative ? -value : value;
 }
 
-// Изменяет текущий (по edit_cursor) редактируемый разряд.
-// Для знака delta не важна — обе кнопки (▲/▼) просто переключают +/-.
 void adjust_edit_digit(int8_t delta) {
     switch (edit_cursor) {
         case 0:
@@ -207,9 +205,6 @@ void adjust_edit_digit(int8_t delta) {
     }
 }
 
-// Вход в редактирование уставки — вызывается только когда current_mode ==
-// MODE_90_TARGET (проверка в loop()), поэтому target_oled гарантированно
-// не nullptr.
 void enter_target_edit() {
     Target_settings* t = settings.get_target_settings();
     decompose_angle_90(t->target_angle_deg, edit_negative, edit_tens, edit_ones, edit_dec);
@@ -218,25 +213,172 @@ void enter_target_edit() {
     edit_blink_visible  = true;
     edit_blink_timer    = millis();
     editing_target      = true;
-    target_reached      = false;   // пока идёт настройка, индикация "достигнуто" не актуальна
+    target_reached      = false;
 
     target_oled->print_target_edit_page();
     target_oled->update_target_edit(edit_negative, edit_tens, edit_ones, edit_dec,
                                      edit_cursor, edit_blink_visible);
 }
 
-// Выход из редактирования (после OK на последнем разряде) — сохраняет
-// уставку в settings и возвращает обычный экран режима.
 void exit_target_edit_and_save() {
     settings.get_target_settings()->target_angle_deg =
         recompose_angle_90(edit_negative, edit_tens, edit_ones, edit_dec);
 
     editing_target = false;
-    sleep_manager.reset_activity();   // таймер сна был "заморожен" на время ввода — синхронизируем заново
-    oled->print_base_page();          // тот же объект, что и раньше — просто перерисовать
+    sleep_manager.reset_activity();
+    oled->print_base_page();
+    apply_battery_to_oled();
 }
 
-// ─── Смена режима отображения (цикл вперёд/назад через placement new) ─────
+// ─── Меню настроек: навигация и значения ──────────────────────────────────
+uint8_t find_sleep_timeout_index() {
+    uint32_t v = settings.get_sleep_settings()->inactivity_timeout_ms;
+    for (uint8_t i = 0; i < SLEEP_TIMEOUT_OPTIONS_COUNT; i++) {
+        if (SLEEP_TIMEOUT_OPTIONS_MS[i] == v) return i;
+    }
+    return 1;
+}
+
+void adjust_current_menu_item(int8_t delta) {
+    Sound_settings*   snd  = settings.get_sound_settings();
+    Display_settings* disp = settings.get_display_settings();
+    Sleep_settings*   slp  = settings.get_sleep_settings();
+
+    switch ((MenuItem)menu_cursor) {
+        case MenuItem::SOUND: {
+            int v = ((int)snd->level + 3 + delta) % 3;
+            snd->level = (SoundLevel)v;
+            break;
+        }
+        case MenuItem::BRIGHTNESS: {
+            int v = ((int)disp->brightness + 3 + delta) % 3;
+            disp->brightness = (BrightnessLevel)v;
+            oled->apply_brightness(disp->brightness);
+            break;
+        }
+        case MenuItem::SLEEP_TIMEOUT: {
+            int idx = ((int)find_sleep_timeout_index() + SLEEP_TIMEOUT_OPTIONS_COUNT + delta)
+                      % SLEEP_TIMEOUT_OPTIONS_COUNT;
+            slp->inactivity_timeout_ms = SLEEP_TIMEOUT_OPTIONS_MS[idx];
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+void format_menu_lines() {
+    Sound_settings*   snd  = settings.get_sound_settings();
+    Display_settings* disp = settings.get_display_settings();
+
+    strcpy(menu_line_buf[(uint8_t)MenuItem::CALIBRATE], "Calibrate");
+
+    {
+        const char* val = "Normal";
+        if (snd->level == SoundLevel::OFF)        val = "Off";
+        else if (snd->level == SoundLevel::QUIET) val = "Quiet";
+        char* line = menu_line_buf[(uint8_t)MenuItem::SOUND];
+        strcpy(line, "Sound: ");
+        strcat(line, val);
+    }
+    {
+        const char* val = "Bright";
+        if (disp->brightness == BrightnessLevel::DIM)         val = "Dim";
+        else if (disp->brightness == BrightnessLevel::MEDIUM) val = "Medium";
+        char* line = menu_line_buf[(uint8_t)MenuItem::BRIGHTNESS];
+        strcpy(line, "Bright: ");
+        strcat(line, val);
+    }
+    {
+        char* line = menu_line_buf[(uint8_t)MenuItem::SLEEP_TIMEOUT];
+        strcpy(line, "Sleep: ");
+        strcat(line, SLEEP_TIMEOUT_LABELS[find_sleep_timeout_index()]);
+    }
+    strcpy(menu_line_buf[(uint8_t)MenuItem::EXIT], "Exit");
+
+    for (uint8_t i = 0; i < MENU_ITEM_COUNT; i++) menu_line_ptrs[i] = menu_line_buf[i];
+}
+
+void render_menu() {
+    format_menu_lines();
+
+    // Если мы в режиме редактирования значения, оборачиваем текущее значение в <...>
+    if (menu_editing_value) {
+        // Для текущего пункта (кроме CALIBRATE и EXIT) добавим скобки к значению
+        MenuItem item = (MenuItem)menu_cursor;
+        if (item == MenuItem::SOUND || item == MenuItem::BRIGHTNESS || item == MenuItem::SLEEP_TIMEOUT) {
+            // Временно модифицируем строку в буфере, добавив '<' и '>'
+            char* line = menu_line_buf[menu_cursor];
+            // Найдём позицию после ": "
+            char* val_start = strchr(line, ' ');
+            if (val_start) {
+                val_start++; // пропускаем пробел
+                // Сдвинем остаток вправо на 2, чтобы вставить '<' и '>'
+                size_t len = strlen(val_start);
+                // Проверим, хватает места в буфере
+                if (strlen(line) + 2 < sizeof(menu_line_buf[menu_cursor])) {
+                    // Сдвигаем вправо на 1 для '>'
+                    memmove(val_start + 1, val_start, len + 1);
+                    val_start[0] = '<';
+                    // Найдём конец значения (до пробела или конца)
+                    char* end = val_start + 1;
+                    while (*end && *end != ' ') end++;
+                    // Вставим '>' перед пробелом или в конец
+                    memmove(end + 1, end, strlen(end) + 1);
+                    *end = '>';
+                }
+            }
+        }
+    }
+
+    oled->print_menu_page(menu_line_ptrs, MENU_ITEM_COUNT, menu_cursor);
+}
+
+void open_menu() {
+    menu_open           = true;
+    menu_editing_value  = false;
+    menu_cursor         = 0;
+    render_menu();
+}
+
+void close_menu() {
+    settings.save_persisted();
+    menu_open          = false;
+    menu_editing_value = false;
+    oled->print_base_page();
+    apply_battery_to_oled();
+}
+
+void run_calibration_flow() {
+    for (uint8_t i = 5; i > 0; i--) {
+        oled->print_calibration_countdown(i);
+        delay(1000);
+    }
+    oled->print_calibration_message("CALIBRATING...");
+    mpu.calibration(settings.get_mpu_settings()->calibration_strength);
+    oled->print_calibration_message("DONE");
+    delay(800);
+}
+
+void handle_menu_button_click() {
+    MenuItem item = (MenuItem)menu_cursor;
+
+    if (item == MenuItem::EXIT) {
+        close_menu();
+        return;
+    }
+    if (item == MenuItem::CALIBRATE) {
+        run_calibration_flow();
+        close_menu();
+        return;
+    }
+
+    // Остальные пункты — со значением
+    menu_editing_value = true;
+    render_menu();
+}
+
+// ─── Смена режима отображения ──────────────────────────────────────────────
 void construct_oled_for_mode(DisplayMode mode) {
     if (oled) oled->~OLED();
     target_oled = nullptr;
@@ -262,8 +404,9 @@ void construct_oled_for_mode(DisplayMode mode) {
     target_reached = false;
 
     oled->init(settings.get_display_settings());
+    oled->apply_brightness(settings.get_display_settings()->brightness);
     oled->print_base_page();
-    apply_battery_to_oled();   // новый OLED-объект создан с нуля — без этого сбросится на 0%
+    apply_battery_to_oled();
     mpu.set_oled(oled);
 #ifdef SETUP_DEBUG
     Serial.print(F("Free RAM at start: "));
@@ -293,6 +436,8 @@ void blink_led(uint8_t times) {
 
 // ─── SETUP ─────────────────────────────────────────────────────────────────
 void setup() {
+    settings.load_persisted();
+
     pinMode(D5, OUTPUT);
     digitalWrite(D5, LOW);
 
@@ -311,10 +456,6 @@ void setup() {
     Wire.begin();
     blink_led(1);
 
-    // OLED — placement new
-#ifdef SETUP_DEBUG
-    Serial.println(F("OLED: creating..."));
-#endif
     oled = new (&get_storage().d90) OLED_Degrees_90();
     delay(500);
 #ifdef SETUP_DEBUG
@@ -323,17 +464,12 @@ void setup() {
 #endif
 
     oled->init(settings.get_display_settings());
+    oled->apply_brightness(settings.get_display_settings()->brightness);
 #ifdef SETUP_DEBUG
     Serial.println(F("OLED: init OK"));
 #endif
     blink_led(2);
 
-    oled->print_start_page();
-
-    // MPU
-#ifdef SETUP_DEBUG
-    Serial.println(F("MPU: init..."));
-#endif
     mpu.init(oled, settings.get_mpu_settings());
 #ifdef SETUP_DEBUG
     Serial.println(F("MPU: init OK"));
@@ -344,11 +480,9 @@ void setup() {
 
     oled->print_base_page();
 
-    pinMode(A0, INPUT);
     pinMode(D7, OUTPUT);
     digitalWrite(D7, HIGH);
 
-    // ─── Батарея ───────────────────────────────────────────────────
     battery.init(settings.get_battery_settings());
     apply_battery_to_oled();
 
@@ -363,14 +497,11 @@ void setup() {
 
 // ─── LOOP ──────────────────────────────────────────────────────────────────
 void loop() {
-    // tick() всем трём кнопкам всегда, независимо от текущего состояния —
-    // иначе GButton не отследит клики/удержания корректно.
     menu_btn.tick();
     mode_btn.tick();
     zero_btn.tick();
 
     if (editing_target) {
-        // ── Режим ввода уставки: zero=▲, mode=▼, menu=OK ──────────────
         if (zero_btn.isClick()) {
             adjust_edit_digit(+1);
             target_oled->update_target_edit(edit_negative, edit_tens, edit_ones, edit_dec,
@@ -384,24 +515,43 @@ void loop() {
         if (menu_btn.isClick()) {
             edit_cursor++;
             if (edit_cursor > 3) {
-                exit_target_edit_and_save();   // после десятой доли OK завершает ввод
+                exit_target_edit_and_save();
             } else {
-                edit_blink_visible = true;     // новый разряд сразу видимый, не "погашен"
+                edit_blink_visible = true;
                 edit_blink_timer   = millis();
                 target_oled->update_target_edit(edit_negative, edit_tens, edit_ones, edit_dec,
                                                  edit_cursor, edit_blink_visible);
             }
         }
 
-        // Мигание текущего разряда — курсор ввода.
         if (editing_target && millis() - edit_blink_timer >= EDIT_BLINK_INTERVAL_MS) {
             edit_blink_timer = millis();
             edit_blink_visible = !edit_blink_visible;
             target_oled->update_target_edit(edit_negative, edit_tens, edit_ones, edit_dec,
                                              edit_cursor, edit_blink_visible);
         }
+    } else if (menu_open) {
+        if (menu_editing_value) {
+            if (zero_btn.isClick()) { adjust_current_menu_item(-1); render_menu(); }
+            if (mode_btn.isClick())  { adjust_current_menu_item(+1); render_menu(); }
+            if (menu_btn.isClick())  { menu_editing_value = false; render_menu(); }
+        } else {
+            if (zero_btn.isClick()) {
+                menu_cursor = (uint8_t)((menu_cursor + MENU_ITEM_COUNT - 1) % MENU_ITEM_COUNT);
+                render_menu();
+            }
+            if (mode_btn.isClick()) {
+                menu_cursor = (uint8_t)((menu_cursor + 1) % MENU_ITEM_COUNT);
+                render_menu();
+            }
+            if (menu_btn.isClick()) {
+                handle_menu_button_click();
+            }
+        }
+        if (menu_btn.isHold()) {
+            close_menu();
+        }
     } else {
-        // ── Обычная работа кнопок ─────────────────────────────────────
         if (mode_btn.isClick()) {
             change_mode_next();
         }
@@ -414,18 +564,15 @@ void loop() {
         if (menu_btn.isHold() && current_mode == MODE_90_TARGET) {
             enter_target_edit();
         }
+        if (menu_btn.isClick()) {
+            open_menu();
+        }
     }
 
     digitalWrite(D5, (mpu.is_zeroing() || target_reached) ? HIGH : LOW);
 
-    update_buzzer();   // неблокирующее переключение пина зуммера по micros()
-
-    // Battery сам решает, когда реально мерить (см. MEASURE_INTERVAL_MS в battery.cpp);
-    // update() возвращает true только когда процент или состояние правда изменились.
     bool battery_changed = battery.update();
 
-    // Мигание контуром в LOW_BATTERY — отдельный таймер, не завязанный на
-    // Battery::update(), т.к. само значение может не меняться, а мигать надо.
     bool blink_toggled = false;
     static uint32_t blink_timer = 0;
     static constexpr uint32_t BLINK_INTERVAL_MS = 400;
@@ -437,24 +584,26 @@ void loop() {
             blink_toggled = true;
         }
     } else if (!blink_visible) {
-        blink_visible = true;   // вышли из LOW_BATTERY — сбрасываем фазу мигания
+        blink_visible = true;
     }
 
-    if (battery_changed || blink_toggled) {
-        apply_battery_to_oled();
+    // Обновляем батарею на экране ТОЛЬКО если меню и редактирование уставки закрыты
+    if (!menu_open && !editing_target) {
+        if (battery_changed || blink_toggled) {
+            apply_battery_to_oled();
+        }
     }
 
     if (mpu_flag) {
         mpu.calculate_angles();
 
-        // ── Проверка достижения уставки (только MODE_90_TARGET, не во время ввода) ──
-        if (current_mode == MODE_90_TARGET && !editing_target) {
-            float displayed_angle = -mpu.get_angle_degrees(AXIS::X);   // тот же знак, что и на экране
+        if (current_mode == MODE_90_TARGET && !editing_target && !menu_open) {
+            float displayed_angle = -mpu.get_angle_degrees(AXIS::X);
             Target_settings* t = settings.get_target_settings();
             bool target_reached_now = fabs(displayed_angle - t->target_angle_deg) <= t->tolerance_deg;
 
             if (target_reached_now && !target_reached) {
-                start_beep();   // короткий бип только на входе в диапазон, не постоянно
+                start_beep();
             }
             target_reached = target_reached_now;
         } else {
@@ -462,19 +611,15 @@ void loop() {
         }
 
         float angle{ mpu.get_angle_radians(AXIS::X) };
-        if (!editing_target) {
+        if (!editing_target && !menu_open) {
             oled->update_angle_value(angle);
         }
 
-        // Бездействие считаем по той же оси, что выводится на экран.
-        // Во время редактирования уставки (устройство обычно держат неподвижно,
-        // пока вводят цифры) sleep_manager.update() не вызываем вообще —
-        // иначе таймер бездействия уведёт устройство в сон прямо посреди ввода.
-        if (!editing_target && sleep_manager.update(mpu.get_angle_degrees(AXIS::X))) {
+        if (!editing_target && !menu_open && sleep_manager.update(mpu.get_angle_degrees(AXIS::X))) {
             mpu.sleep();
             oled->set_power(false);
 
-            sleep_manager.enter_sleep();   // возврат — уже после пробуждения по кнопке
+            sleep_manager.enter_sleep();
 
             oled->set_power(true);
             mpu.wake();

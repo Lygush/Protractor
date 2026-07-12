@@ -14,7 +14,7 @@ void MPU::init(OLED* oled_ptr, Mpu_settings* settings) {
     mpu.setZGyroOffset(83);
 
     mpu.SetOLED(oled_ptr);
-    calibration(settings->calibration_strength);
+    //calibration(settings->calibration_strength);
 
     mpu.dmpInitialize();
     delay(5);
