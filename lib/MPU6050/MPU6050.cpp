@@ -3294,7 +3294,6 @@ void MPU6050::PID(uint8_t ReadAddress, float kP, float kI, uint8_t Loops, const 
 	float Error, PTerm, ITerm[3];
 	int16_t eSample;
 	uint32_t eSum ;
-	Serial.write('>');
 	for (int i = 0; i < 3; i++) {
 		I2Cdev::readWords(devAddr, SaveAddress + (i * shift), 1, (uint16_t *)&Data); // reads 1 or more 16 bit integers (Word)
 		Reading = Data;
@@ -3325,13 +3324,11 @@ void MPU6050::PID(uint8_t ReadAddress, float kP, float kI, uint8_t Loops, const 
 			}
 			if((c == 99) && eSum > 1000){						// Error is still to great to continue 
 				c = 0;
-				Serial.write('*');
 			}
 			if((eSum * ((ReadAddress == 0x3B)?.05: 1)) < 5) eSample++;	// Successfully found offsets prepare to  advance
 			if((eSum < 100) && (c > 10) && (eSample >= 10)) break;		// Advance to next Loop
 			delay(1);
 		}
-		Serial.write('.');
 		kP *= .75;
 		kI *= .75;
 		for (int i = 0; i < 3; i++){
@@ -3349,6 +3346,12 @@ void MPU6050::PID(uint8_t ReadAddress, float kP, float kI, uint8_t Loops, const 
 	resetDMP();
 }
 
+// PrintActiveOffsets() нигде в проекте не вызывается (это отладочный вывод
+// офсетов калибровки в Serial для ПК). Заворачиваем под флаг: без него
+// функция не компилируется вовсе, и линкер не тащит HardwareSerial/Print —
+// именно они были причиной лишних ~300+ байт flash в релизной прошивке.
+// Нужно распечатать офсеты при отладке — определи MPU6050_PRINT_OFFSETS.
+#ifdef MPU6050_PRINT_OFFSETS
 #define printfloatx(Name,Variable,Spaces,Precision,EndTxt) { Serial.print(F(Name)); {char S[(Spaces + Precision + 3)];Serial.print(F(" ")); Serial.print(dtostrf((float)Variable,Spaces,Precision ,S));}Serial.print(F(EndTxt)); }//Name,Variable,Spaces,Precision,EndTxt
 void MPU6050::PrintActiveOffsets() {
 	uint8_t AOffsetRegister = (getDeviceID() < 0x38 )? MPU6050_RA_XA_OFFS_H:0x77;
@@ -3372,6 +3375,11 @@ void MPU6050::PrintActiveOffsets() {
 	printfloatx("", Data[1], 5, 0, ",  ");
 	printfloatx("", Data[2], 5, 0, "\n");
 }
+#else
+void MPU6050::PrintActiveOffsets() {
+	// no-op в релизе — см. комментарий выше
+}
+#endif
 
 void MPU6050::SetOLED(OLED *oled_ptr)
 {

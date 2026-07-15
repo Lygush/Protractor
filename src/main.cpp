@@ -40,6 +40,13 @@ OLED_Degrees_90_Target* target_oled = nullptr;
 
 volatile bool mpu_flag = false;
 
+// Выбор оси (см. MeasureAxis в settings.h) конвертируется в индекс AXIS,
+// с которым уже работает mpu.cpp — DMP считает все три угла каждый кадр,
+// переключение оси не требует доп. вычислений, только смены индекса.
+AXIS current_axis() {
+    return (settings.get_mpu_settings()->axis == MeasureAxis::Y) ? AXIS::Y : AXIS::X;
+}
+
 // ─── Цикл режимов отображения ──────────────────────────────────────────────
 static constexpr DisplayMode MODE_CYCLE[] = { MODE_90, MODE_90_TARGET, MODE_360, MODE_RADIANS };
 static constexpr uint8_t     MODE_COUNT   = sizeof(MODE_CYCLE) / sizeof(MODE_CYCLE[0]);
@@ -61,9 +68,20 @@ static constexpr uint32_t EDIT_BLINK_INTERVAL_MS = 400;
 
 bool target_reached = false;
 
+// ─── HOLD (заморозка показания) ────────────────────────────────────────────
+// Клик zero — переключить заморозку показания (HOLD); удержание zero —
+// зануление (была наоборот: клик=zero, удержание отсутствовало).
+bool angle_held = false;
+
+// ─── Автопереворот экрана ───────────────────────────────────────────────────
+uint32_t orientation_change_since = 0;
+static constexpr uint32_t ORIENTATION_HYSTERESIS_MS = 500;
+
 // ─── Меню настроек ──────────────────────────────────────────────────────
 enum class MenuItem : uint8_t {
     CALIBRATE = 0,
+    AXIS,
+    UNIT,
     SOUND,
     BRIGHTNESS,
     SLEEP_TIMEOUT,
@@ -214,6 +232,7 @@ void enter_target_edit() {
     edit_blink_timer    = millis();
     editing_target      = true;
     target_reached      = false;
+    angle_held          = false;
 
     target_oled->print_target_edit_page();
     target_oled->update_target_edit(edit_negative, edit_tens, edit_ones, edit_dec,
@@ -243,8 +262,18 @@ void adjust_current_menu_item(int8_t delta) {
     Sound_settings*   snd  = settings.get_sound_settings();
     Display_settings* disp = settings.get_display_settings();
     Sleep_settings*   slp  = settings.get_sleep_settings();
+    Mpu_settings*     mpuS = settings.get_mpu_settings();
 
     switch ((MenuItem)menu_cursor) {
+        case MenuItem::AXIS: {
+            mpuS->axis = (mpuS->axis == MeasureAxis::X) ? MeasureAxis::Y : MeasureAxis::X;
+            break;
+        }
+        case MenuItem::UNIT: {
+            int v = ((int)disp->unit + 3 + delta) % 3;
+            disp->unit = (AngleUnit)v;
+            break;
+        }
         case MenuItem::SOUND: {
             int v = ((int)snd->level + 3 + delta) % 3;
             snd->level = (SoundLevel)v;
@@ -270,9 +299,24 @@ void adjust_current_menu_item(int8_t delta) {
 void format_menu_lines() {
     Sound_settings*   snd  = settings.get_sound_settings();
     Display_settings* disp = settings.get_display_settings();
+    Mpu_settings*     mpuS = settings.get_mpu_settings();
 
     strcpy(menu_line_buf[(uint8_t)MenuItem::CALIBRATE], "Calibrate");
 
+    {
+        const char* val = (mpuS->axis == MeasureAxis::Y) ? "Y" : "X";
+        char* line = menu_line_buf[(uint8_t)MenuItem::AXIS];
+        strcpy(line, "Axis: ");
+        strcat(line, val);
+    }
+    {
+        const char* val = "Deg";
+        if (disp->unit == AngleUnit::PERCENT)       val = "%";
+        else if (disp->unit == AngleUnit::MM_PER_M) val = "mm/m";
+        char* line = menu_line_buf[(uint8_t)MenuItem::UNIT];
+        strcpy(line, "Unit: ");
+        strcat(line, val);
+    }
     {
         const char* val = "Normal";
         if (snd->level == SoundLevel::OFF)        val = "Off";
@@ -306,7 +350,8 @@ void render_menu() {
     if (menu_editing_value) {
         // Для текущего пункта (кроме CALIBRATE и EXIT) добавим скобки к значению
         MenuItem item = (MenuItem)menu_cursor;
-        if (item == MenuItem::SOUND || item == MenuItem::BRIGHTNESS || item == MenuItem::SLEEP_TIMEOUT) {
+        if (item == MenuItem::AXIS || item == MenuItem::UNIT ||
+            item == MenuItem::SOUND || item == MenuItem::BRIGHTNESS || item == MenuItem::SLEEP_TIMEOUT) {
             // Временно модифицируем строку в буфере, добавив '<' и '>'
             char* line = menu_line_buf[menu_cursor];
             // Найдём позицию после ": "
@@ -338,6 +383,7 @@ void open_menu() {
     menu_open           = true;
     menu_editing_value  = false;
     menu_cursor         = 0;
+    angle_held           = false;
     render_menu();
 }
 
@@ -355,6 +401,9 @@ void run_calibration_flow() {
         delay(1000);
     }
     oled->print_calibration_message("CALIBRATING...");
+    // ВРЕМЕННО (диагностическая сборка): mpu.calibration() закомментирован —
+    // это самая тяжёлая функция в прошивке (~1.7КБ), не нужна для проверки
+    // гипотезы про -mrelax. В полной версии она на месте.
     mpu.calibration(settings.get_mpu_settings()->calibration_strength);
     oled->print_calibration_message("DONE");
     delay(800);
@@ -402,6 +451,7 @@ void construct_oled_for_mode(DisplayMode mode) {
     current_mode  = mode;
     editing_target = false;
     target_reached = false;
+    angle_held     = false;
 
     oled->init(settings.get_display_settings());
     oled->apply_brightness(settings.get_display_settings()->brightness);
@@ -436,7 +486,18 @@ void blink_led(uint8_t times) {
 
 // ─── SETUP ─────────────────────────────────────────────────────────────────
 void setup() {
+    // ─── ВРЕМЕННО ДЛЯ ДИАГНОСТИКИ ───────────────────────────────────────────
+    // Serial.begin() поднят в самое начало (раньше он шёл ПОСЛЕ EEPROM-кода,
+    // поэтому если зависание было там — не было бы видно вообще ничего).
+    // Подключи Serial-монитор на 115200 бод и пришли, какая строка была
+    // напечатана последней — это покажет точное место зависания.
+    //Serial.begin(115200);
+    //Serial.println(F("CP0"));
+
+    settings.init_storage();
+    //Serial.println(F("CP1"));
     settings.load_persisted();
+    //Serial.println(F("CP2"));
 
     pinMode(D5, OUTPUT);
     digitalWrite(D5, LOW);
@@ -444,41 +505,27 @@ void setup() {
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
 
-#if defined(SETUP_DEBUG) || defined(BATTERY_DEBUG)
-    Serial.begin(115200);
-#endif
-#ifdef SETUP_DEBUG
-    Serial.print(F("Free RAM at start: "));
-    Serial.println(memoryFree());
-    Serial.println(F("Start setup"));
-#endif
-
     Wire.begin();
+    //Serial.println(F("CP4"));
     blink_led(1);
 
     oled = new (&get_storage().d90) OLED_Degrees_90();
     delay(500);
-#ifdef SETUP_DEBUG
-    Serial.print(F("Free RAM after OLED create: "));
-    Serial.println(memoryFree());
-#endif
+    //Serial.println(F("CP5"));
 
     oled->init(settings.get_display_settings());
+    //Serial.println(F("CP6"));
     oled->apply_brightness(settings.get_display_settings()->brightness);
-#ifdef SETUP_DEBUG
-    Serial.println(F("OLED: init OK"));
-#endif
     blink_led(2);
 
     mpu.init(oled, settings.get_mpu_settings());
-#ifdef SETUP_DEBUG
-    Serial.println(F("MPU: init OK"));
-#endif
+    //Serial.println(F("CP8"));
     blink_led(3);
 
     attachInterrupt(0, dmp_ready, RISING);
 
     oled->print_base_page();
+    //Serial.println(F("CP10"));
 
     pinMode(D7, OUTPUT);
     digitalWrite(D7, HIGH);
@@ -487,12 +534,7 @@ void setup() {
     apply_battery_to_oled();
 
     sleep_manager.init(settings.get_sleep_settings());
-
-#ifdef SETUP_DEBUG
-    Serial.print(F("Free RAM at end of setup: "));
-    Serial.println(memoryFree());
-    Serial.println(F("Setup done"));
-#endif
+    //Serial.println(F("CP12"));
 }
 
 // ─── LOOP ──────────────────────────────────────────────────────────────────
@@ -559,6 +601,10 @@ void loop() {
             change_mode_prev();
         }
         if (zero_btn.isClick()) {
+            angle_held = !angle_held;
+            oled->update_hold_indicator(angle_held);
+        }
+        if (zero_btn.isHold()) {
             mpu.request_zero();
         }
         if (menu_btn.isHold() && current_mode == MODE_90_TARGET) {
@@ -598,7 +644,7 @@ void loop() {
         mpu.calculate_angles();
 
         if (current_mode == MODE_90_TARGET && !editing_target && !menu_open) {
-            float displayed_angle = -mpu.get_angle_degrees(AXIS::X);
+            float displayed_angle = -mpu.get_angle_degrees(current_axis());
             Target_settings* t = settings.get_target_settings();
             bool target_reached_now = fabs(displayed_angle - t->target_angle_deg) <= t->tolerance_deg;
 
@@ -610,12 +656,12 @@ void loop() {
             target_reached = false;
         }
 
-        float angle{ mpu.get_angle_radians(AXIS::X) };
-        if (!editing_target && !menu_open) {
-            oled->update_angle_value(angle);
+        float value = mpu.get_angle_radians(current_axis());
+        if (!editing_target && !menu_open && !angle_held) {
+            oled->update_angle_value(value);
         }
 
-        if (!editing_target && !menu_open && sleep_manager.update(mpu.get_angle_degrees(AXIS::X))) {
+        if (!editing_target && !menu_open && sleep_manager.update(mpu.get_angle_degrees(current_axis()))) {
             mpu.sleep();
             oled->set_power(false);
 

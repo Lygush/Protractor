@@ -116,6 +116,13 @@ void OLED::change_revers()
     oled.flipH(revers);
 }
 
+void OLED::update_hold_indicator(bool held)
+{
+    oled.setCursor(0, 7);
+    oled.print(held ? F("HOLD") : F("zero"));
+    oled.update();
+}
+
 void OLED::apply_brightness(BrightnessLevel level)
 {
     uint8_t contrast;
@@ -255,9 +262,15 @@ void OLED_Degrees_90::print_base_page()
     oled.update();
 }
 
-void OLED_Degrees_90::update_angle_value(float angle)
+// value: радианы (unit==DEGREES) ИЛИ уже готовый tan(угол) (unit==PERCENT
+// или MM_PER_M) — вызывающий код (main.cpp) сам решает, что посчитать через
+// MPU::get_angle_radians()/get_slope_ratio(), здесь только форматирование.
+void OLED_Degrees_90::update_angle_value(float value)
 {
-    angle = degrees(angle);
+    // ВРЕМЕННО (диагностическая сборка): ветки %/мм-на-метр закомментированы,
+    // чтобы влезть в чип вместе с полным Serial-выводом для отладки
+    // зависания в setup(). Полная версия сохранена, не потеряна.
+    float angle = degrees(value);
     angle = -angle;
     angle = constrain(angle, -99.9f, 99.9f);
 
@@ -365,4 +378,13 @@ void OLED_Degrees_90_Target::update_target_edit(bool negative, uint8_t tens, uin
     char right[2] = { dec_ch, '\0' };
 
     send_split_num_buffer(left, right);
+}
+
+void OLED_Degrees_90_Target::update_direction_arrow(int8_t direction)
+{
+    static constexpr int x = 30, y = 0, w = 8, h = 8;
+    oled.clear(x, y, x + w, y + h);
+    if (direction > 0)      oled.drawBitmap(x, y, arrow_up_8x8, w, h);
+    else if (direction < 0) oled.drawBitmap(x, y, arrow_down_8x8, w, h);
+    oled.update(x, y, x + w, y + h);
 }

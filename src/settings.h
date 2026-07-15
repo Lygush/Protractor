@@ -9,6 +9,24 @@ enum DisplayMode {
     MODE_RADIANS
 };
 
+// Какую ось DMP показывать. DMP и так каждый кадр считает все три угла
+// (ypr[0..2] в mpu.cpp) — переключение оси не требует доп. вычислений,
+// только смены индекса. AXIS::Z (yaw) сюда не включена: без магнитометра
+// она "плывёт" и не подходит для угломера (см. коммент у AXIS в mpu.h).
+enum class MeasureAxis : uint8_t {
+    X,   // roll  — наклон влево/вправо (было единственной осью)
+    Y    // pitch — наклон вперёд/назад
+};
+
+// Единицы отображения угла в режимах MODE_90 / MODE_90_TARGET.
+// PERCENT/MM_PER_M — тот же угол, пересчитанный как строительный уклон
+// (tan(angle)*100 и tan(angle)*1000 соответственно).
+enum class AngleUnit : uint8_t {
+    DEGREES,
+    PERCENT,
+    MM_PER_M
+};
+
 // Уровень громкости зуммера. Полноценной аналоговой громкости на пассивной
 // пищалке, подключённой напрямую к пину, не сделать (нет транзистора/ЦАП) —
 // поэтому QUIET реализован не как "тише", а как более короткий сигнал
@@ -31,6 +49,7 @@ enum class BrightnessLevel : uint8_t {
 struct Display_settings
 {
     BrightnessLevel brightness{BrightnessLevel::BRIGHT};
+    AngleUnit unit{AngleUnit::DEGREES};   // единицы для MODE_90 / MODE_90_TARGET
 };
 
 struct Sound_settings
@@ -53,6 +72,7 @@ enum class BatteryState : uint8_t {
 struct Mpu_settings
 {
     uint8_t calibration_strength{10}; //Максимум 10
+    MeasureAxis axis{MeasureAxis::X};   // какую ось DMP показывать (см. MeasureAxis)
 };
 
 struct Battery_settings
@@ -111,13 +131,15 @@ struct Target_settings
 // (например, из-за отключения питания посреди записи) от валидной.
 struct PersistedSettings
 {
-    static constexpr uint8_t MAGIC = 0xA5;
+    static constexpr uint8_t MAGIC = 0xA6;   // версия структуры увеличена — добавлены axis/unit
 
     uint8_t  magic{MAGIC};
     SoundLevel      sound_level{SoundLevel::NORMAL};
     BrightnessLevel brightness{BrightnessLevel::BRIGHT};
     uint32_t sleep_timeout_ms{30000};
     float    target_tolerance_deg{1.0f};
+    MeasureAxis axis{MeasureAxis::X};
+    AngleUnit   unit{AngleUnit::DEGREES};
     uint8_t  checksum{0};
 };
 
@@ -139,6 +161,8 @@ public:
     // или повреждена (magic/checksum не совпали) — оставляет значения по
     // умолчанию (уже стоящие в полях структур) и сама их туда же сохраняет,
     // чтобы следующая загрузка была валидной.
+    void init_storage();     // ОБЯЗАТЕЛЬНО вызвать первым, до load_persisted() —
+                              // включает эмуляцию EEPROM на LGT8F328P (регистр ECCR)
     void load_persisted();
 
     // Сохраняет текущие пользовательские настройки в EEPROM. Через

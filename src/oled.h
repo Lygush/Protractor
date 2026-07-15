@@ -26,6 +26,10 @@ public:
     void change_revers();
     bool get_revers() { return revers; }
 
+    // Перерисовывает только левую подпись футера (zero/HOLD) — используется
+    // при переключении режима HOLD, чтобы не перерисовывать весь экран.
+    void update_hold_indicator(bool held);
+
     // Включить/выключить сам дисплей (команда SSD1306 DISPLAYON/OFF) —
     // в отличие от clear(), реально гасит матрицу и её питание.
     void set_power(bool on) { oled.setPower(on); }
@@ -119,6 +123,10 @@ public:
     // (редактируемого) разряда — так реализован курсор ввода.
     void update_target_edit(bool negative, uint8_t tens, uint8_t ones, uint8_t dec,
                              uint8_t cursor_pos, bool digit_visible);
+
+    // Стрелка направления к уставке: +1 = наклонить в одну сторону (текущий
+    // угол меньше уставки), -1 = в другую, 0 = в допуске (без стрелки).
+    void update_direction_arrow(int8_t direction);
 };
 
 class OLED_Radians : public OLED {

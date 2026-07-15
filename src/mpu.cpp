@@ -48,6 +48,22 @@ float MPU::get_angle_degrees(AXIS axis) {
     return degrees(ypr[axis] - ypr_zero[axis]);
 }
 
+// См. комментарий в mpu.h. Roll (AXIS::X) = atan2(gravity.y, gravity.z) ->
+// tan(roll) = gravity.y/gravity.z. Pitch (AXIS::Y) = atan2(gravity.x,
+// sqrt(gravity.y²+gravity.z²)) -> tan(pitch) = gravity.x/sqrt(...) — sqrt()
+// тут не новая цена, dmpGetYawPitchRoll() и так его считает для того же pitch.
+// Не учитывает "ноль" (zero_offset) — %/мм-на-метр показывают физический
+// уклон площадки, а не относительно занулённой точки, что и требуется для
+// строительной задачи (в отличие от режима градусов, который меряет
+// относительно zero).
+float MPU::get_slope_ratio(AXIS axis) const {
+    if (axis == AXIS::X) {
+        return (gravity.z != 0.0f) ? (gravity.y / gravity.z) : 0.0f;
+    }
+    float denom = sqrt(gravity.y * gravity.y + gravity.z * gravity.z);
+    return (denom != 0.0f) ? (gravity.x / denom) : 0.0f;
+}
+
 void MPU::set_zero() {
     ypr_zero[0] = ypr[0];
     ypr_zero[1] = ypr[1];
@@ -62,13 +78,13 @@ void MPU::request_zero() {
 }
 
 // Вызывается из calculate_angles() на каждый новый кадр DMP.
-// Следит только за осью, которая реально выводится на экран (AXIS::X — roll),
-// т.к. yaw (ypr[0]) без магнитометра всегда немного "плывёт" и не подходит
-// как критерий устойчивости.
+// Следит только за той осью, которая реально выводится на экран (см.
+// mpu_settings->axis / current_axis()), т.к. yaw (ypr[0]) без магнитометра
+// всегда немного "плывёт" и не подходит как критерий устойчивости.
 void MPU::update_zero_stability() {
     if (!zero_pending) return;
 
-    float current = ypr[AXIS::X];
+    float current = ypr[current_axis()];
     uint32_t now = millis();
 
     if (fabs(current - zero_last_angle) > ZERO_TOLERANCE) {
