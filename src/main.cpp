@@ -19,7 +19,6 @@ union OledStorage {
     OLED_Degrees_90        d90;
     OLED_Degrees_90_Target d90_target;
     OLED_Degrees_360       d360;
-    OLED_Radians           rad;
     OledStorage() {}
     ~OledStorage() {}
 };
@@ -47,8 +46,25 @@ AXIS current_axis() {
     return (settings.get_mpu_settings()->axis == MeasureAxis::Y) ? AXIS::Y : AXIS::X;
 }
 
+// Переводит текущий угол в единицы, выбранные в меню (Unit), и применяет тот
+// же знак, что и остальной интерфейс (см. displayed_angle в target-режиме
+// ниже). Формат/клэмп под конкретный Unit решает уже OLED (print_unit_value).
+float compute_display_value(AngleUnit unit, AXIS axis) {
+    switch (unit) {
+        case AngleUnit::RADIANS:
+            return -mpu.get_angle_radians(axis);
+        case AngleUnit::PERCENT:
+            return -mpu.get_slope_ratio(axis) * 100.0f;
+        case AngleUnit::MM_PER_M:
+            return -mpu.get_slope_ratio(axis) * 1000.0f;
+        case AngleUnit::DEGREES:
+        default:
+            return -mpu.get_angle_degrees(axis);
+    }
+}
+
 // ─── Цикл режимов отображения ──────────────────────────────────────────────
-static constexpr DisplayMode MODE_CYCLE[] = { MODE_90, MODE_90_TARGET, MODE_360, MODE_RADIANS };
+static constexpr DisplayMode MODE_CYCLE[] = { MODE_90, MODE_90_TARGET, MODE_360 };
 static constexpr uint8_t     MODE_COUNT   = sizeof(MODE_CYCLE) / sizeof(MODE_CYCLE[0]);
 
 DisplayMode current_mode = MODE_90;
@@ -270,7 +286,7 @@ void adjust_current_menu_item(int8_t delta) {
             break;
         }
         case MenuItem::UNIT: {
-            int v = ((int)disp->unit + 3 + delta) % 3;
+            int v = ((int)disp->unit + 4 + delta) % 4;
             disp->unit = (AngleUnit)v;
             break;
         }
@@ -311,8 +327,9 @@ void format_menu_lines() {
     }
     {
         const char* val = "Deg";
-        if (disp->unit == AngleUnit::PERCENT)       val = "%";
-        else if (disp->unit == AngleUnit::MM_PER_M) val = "mm/m";
+        if (disp->unit == AngleUnit::RADIANS)        val = "Rad";
+        else if (disp->unit == AngleUnit::PERCENT)   val = "%";
+        else if (disp->unit == AngleUnit::MM_PER_M)  val = "mm/m";
         char* line = menu_line_buf[(uint8_t)MenuItem::UNIT];
         strcpy(line, "Unit: ");
         strcat(line, val);
@@ -401,9 +418,8 @@ void run_calibration_flow() {
         delay(1000);
     }
     oled->print_calibration_message("CALIBRATING...");
-    // ВРЕМЕННО (диагностическая сборка): mpu.calibration() закомментирован —
-    // это самая тяжёлая функция в прошивке (~1.7КБ), не нужна для проверки
-    // гипотезы про -mrelax. В полной версии она на месте.
+    // Самая "тяжёлая" по флешу функция в прошивке (~1.7КБ) — вызывается
+    // только по явному запросу из меню, не при каждом старте.
     mpu.calibration(settings.get_mpu_settings()->calibration_strength);
     oled->print_calibration_message("DONE");
     delay(800);
@@ -442,9 +458,6 @@ void construct_oled_for_mode(DisplayMode mode) {
             break;
         case MODE_360:
             oled = new (&get_storage().d360) OLED_Degrees_360();
-            break;
-        case MODE_RADIANS:
-            oled = new (&get_storage().rad) OLED_Radians();
             break;
     }
 
@@ -486,18 +499,8 @@ void blink_led(uint8_t times) {
 
 // ─── SETUP ─────────────────────────────────────────────────────────────────
 void setup() {
-    // ─── ВРЕМЕННО ДЛЯ ДИАГНОСТИКИ ───────────────────────────────────────────
-    // Serial.begin() поднят в самое начало (раньше он шёл ПОСЛЕ EEPROM-кода,
-    // поэтому если зависание было там — не было бы видно вообще ничего).
-    // Подключи Serial-монитор на 115200 бод и пришли, какая строка была
-    // напечатана последней — это покажет точное место зависания.
-    //Serial.begin(115200);
-    //Serial.println(F("CP0"));
-
     settings.init_storage();
-    //Serial.println(F("CP1"));
     settings.load_persisted();
-    //Serial.println(F("CP2"));
 
     pinMode(D5, OUTPUT);
     digitalWrite(D5, LOW);
@@ -506,26 +509,21 @@ void setup() {
     digitalWrite(BUZZER_PIN, LOW);
 
     Wire.begin();
-    //Serial.println(F("CP4"));
     blink_led(1);
 
     oled = new (&get_storage().d90) OLED_Degrees_90();
     delay(500);
-    //Serial.println(F("CP5"));
 
     oled->init(settings.get_display_settings());
-    //Serial.println(F("CP6"));
     oled->apply_brightness(settings.get_display_settings()->brightness);
     blink_led(2);
 
     mpu.init(oled, settings.get_mpu_settings());
-    //Serial.println(F("CP8"));
     blink_led(3);
 
     attachInterrupt(0, dmp_ready, RISING);
 
     oled->print_base_page();
-    //Serial.println(F("CP10"));
 
     pinMode(D7, OUTPUT);
     digitalWrite(D7, HIGH);
@@ -534,7 +532,6 @@ void setup() {
     apply_battery_to_oled();
 
     sleep_manager.init(settings.get_sleep_settings());
-    //Serial.println(F("CP12"));
 }
 
 // ─── LOOP ──────────────────────────────────────────────────────────────────
@@ -652,13 +649,19 @@ void loop() {
                 start_beep();
             }
             target_reached = target_reached_now;
+
+            if (!angle_held) {
+                int8_t direction = target_reached_now ? 0
+                                   : (displayed_angle < t->target_angle_deg ? +1 : -1);
+                target_oled->update_direction_arrow(direction);
+            }
         } else {
             target_reached = false;
         }
 
-        float value = mpu.get_angle_radians(current_axis());
         if (!editing_target && !menu_open && !angle_held) {
-            oled->update_angle_value(value);
+            AngleUnit unit = settings.get_display_settings()->unit;
+            oled->update_angle_value(compute_display_value(unit, current_axis()));
         }
 
         if (!editing_target && !menu_open && sleep_manager.update(mpu.get_angle_degrees(current_axis()))) {

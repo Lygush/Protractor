@@ -135,7 +135,7 @@ void OLED::apply_brightness(BrightnessLevel level)
     oled.setContrast(contrast);
 }
 
-// Исправленная функция меню с инверсией и подписями кнопок
+// Список пунктов меню: текущий пункт (cursor_index) рисуется инвертированным.
 void OLED::print_menu_page(const char* const lines[], uint8_t line_count, uint8_t cursor_index)
 {
     oled.clear();
@@ -199,11 +199,10 @@ void OLED::send_num_buffer(const char* text) {
     oled.setWindow(0, 0, 127, 7);
 }
 
-void OLED::send_split_num_buffer(const char* left, const char* right) {
+void OLED::send_split_num_buffer(const char* left, const char* right, int dot_x) {
     static constexpr int bufX0 = 0, bufY0 = 16, bufX1 = 127, bufY1 = 47;
     static constexpr int vOffset = 3;
     static constexpr int CHAR_W = 6 * 3;
-    static constexpr int DOT_X  = (128 - CHAR_W) / 2;
 
     bool ok = oled.createBuffer(bufX0, bufY0, bufX1, bufY1, 0);
     if (!ok) return;
@@ -211,13 +210,13 @@ void OLED::send_split_num_buffer(const char* left, const char* right) {
     oled.setScale(3);
     int y = bufY0 + (32 - 8 * 3) / 2 + vOffset;
 
-    oled.setCursorXY(DOT_X - (int)strlen(left) * CHAR_W, y);
+    oled.setCursorXY(dot_x - (int)strlen(left) * CHAR_W, y);
     oled.print(left);
 
-    oled.setCursorXY(DOT_X, y);
+    oled.setCursorXY(dot_x, y);
     oled.print(F("."));
 
-    oled.setCursorXY(DOT_X + CHAR_W, y);
+    oled.setCursorXY(dot_x + CHAR_W, y);
     oled.print(right);
 
     oled.sendBuffer();
@@ -262,20 +261,35 @@ void OLED_Degrees_90::print_base_page()
     oled.update();
 }
 
-// value: радианы (unit==DEGREES) ИЛИ уже готовый tan(угол) (unit==PERCENT
-// или MM_PER_M) — вызывающий код (main.cpp) сам решает, что посчитать через
-// MPU::get_angle_radians()/get_slope_ratio(), здесь только форматирование.
+// value приходит уже в конечных единицах текущего Unit (см.
+// main.cpp: compute_display_value()) — здесь только форматирование.
 void OLED_Degrees_90::update_angle_value(float value)
 {
-    // ВРЕМЕННО (диагностическая сборка): ветки %/мм-на-метр закомментированы,
-    // чтобы влезть в чип вместе с полным Serial-выводом для отладки
-    // зависания в setup(). Полная версия сохранена, не потеряна.
-    float angle = degrees(value);
-    angle = -angle;
-    angle = constrain(angle, -99.9f, 99.9f);
+    switch (oled_settings ? oled_settings->unit : AngleUnit::DEGREES) {
+        case AngleUnit::RADIANS:
+            print_unit_value(value, 1, 9.9f);
+            break;
+        case AngleUnit::PERCENT:
+        case AngleUnit::MM_PER_M:
+            print_unit_value(value, 3, 999.9f);
+            break;
+        case AngleUnit::DEGREES:
+        default:
+            print_unit_value(value, 2, 99.9f);
+            break;
+    }
+}
 
-    bool negative = angle < 0;
-    float a = fabs(angle);
+// int_digits — сколько целых разрядов в формате (1=Rad "±N.N", 2=Deg
+// "±NN.N", 3=%/мм-на-метр "±NNN.N"), max_abs — граница клэмпа, согласованная
+// с int_digits (напр. 2 разряда -> максимум 99.9). Ведущие нули в целой
+// части гасятся пробелами, младший разряд печатается всегда.
+void OLED_Degrees_90::print_unit_value(float value, uint8_t int_digits, float max_abs)
+{
+    value = constrain(value, -max_abs, max_abs);
+
+    bool negative = value < 0;
+    float a = fabs(value);
 
     int whole = (int)a;
     int dec = (int)((a - whole) * 10.0f + 0.5f);
@@ -283,56 +297,34 @@ void OLED_Degrees_90::update_angle_value(float value)
 
     if (whole == 0 && dec == 0) negative = false;
 
-    int tens = whole / 10;
-    int ones = whole % 10;
+    char left[5];
+    uint8_t pos = 0;
+    left[pos++] = negative ? '-' : ' ';
 
-    char left[4];
-    left[0] = negative ? '-' : ' ';
-    left[1] = (tens > 0) ? char('0' + tens) : ' ';
-    left[2] = char('0' + ones);
-    left[3] = '\0';
-
-    char right[2];
-    right[0] = char('0' + dec);
-    right[1] = '\0';
-
-    send_split_num_buffer(left, right);
-}
-
-//////////////// OLED RADIANS MODE /////////////////////
-
-void OLED_Radians::print_base_page()
-{
-    oled.clear();
-    print_base_page_common();
-    oled.setCursor(113, 1);
-    oled.setScale(1);
-    oled.print(F("PI"));
-    oled.update();
-}
-
-void OLED_Radians::update_angle_value(float angle)
-{
-    bool negative = angle < 0;
-    float a = fabs(angle);
-
-    int whole = (int)a;
-    int dec = (int)((a - whole) * 10.0f + 0.5f);
-    if (dec >= 10) { dec = 0; whole++; }
-    if (whole > 9) whole = 9;
-
-    if (whole == 0 && dec == 0) negative = false;
-
-    char left[3];
-    left[0] = negative ? '-' : ' ';
-    left[1] = char('0' + whole);
-    left[2] = '\0';
+    bool leading_zero = true;
+    if (int_digits >= 3) {
+        int d = (whole / 100) % 10;
+        if (d != 0) leading_zero = false;
+        left[pos++] = leading_zero ? ' ' : char('0' + d);
+    }
+    if (int_digits >= 2) {
+        int d = (whole / 10) % 10;
+        if (d != 0) leading_zero = false;
+        left[pos++] = leading_zero ? ' ' : char('0' + d);
+    }
+    left[pos++] = char('0' + whole % 10);
+    left[pos] = '\0';
 
     char right[2];
     right[0] = char('0' + dec);
     right[1] = '\0';
 
-    send_split_num_buffer(left, right);
+    // 3 целых разряда (%, мм/м) не влезают в историческую позицию точки
+    // (SPLIT_DOT_X_DEFAULT рассчитана под "±99.9") — сдвигаем левее, чтобы
+    // "-999.9" целиком помещалось на 128px экране.
+    int dot_x = (int_digits >= 3) ? 74 : SPLIT_DOT_X_DEFAULT;
+
+    send_split_num_buffer(left, right, dot_x);
 }
 
 //////////////// OLED DEGREE 90 + TARGET MODE /////////////////////
@@ -377,7 +369,7 @@ void OLED_Degrees_90_Target::update_target_edit(bool negative, uint8_t tens, uin
     char left[4]  = { sign_ch, tens_ch, ones_ch, '\0' };
     char right[2] = { dec_ch, '\0' };
 
-    send_split_num_buffer(left, right);
+    send_split_num_buffer(left, right, SPLIT_DOT_X_DEFAULT);
 }
 
 void OLED_Degrees_90_Target::update_direction_arrow(int8_t direction)

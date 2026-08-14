@@ -5,8 +5,7 @@
 enum DisplayMode {
     MODE_90,
     MODE_90_TARGET,   // режим 90° + уставка целевого угла (звук/светодиод при достижении)
-    MODE_360,
-    MODE_RADIANS
+    MODE_360
 };
 
 // Какую ось DMP показывать. DMP и так каждый кадр считает все три угла
@@ -18,11 +17,15 @@ enum class MeasureAxis : uint8_t {
     Y    // pitch — наклон вперёд/назад
 };
 
-// Единицы отображения угла в режимах MODE_90 / MODE_90_TARGET.
+// Единицы отображения угла в режимах MODE_90 / MODE_90_TARGET. Раньше
+// радианы были отдельным DisplayMode (MODE_RADIANS, свой класс OLED_Radians)
+// — по сути это ровно тот же угол ±90°, просто в другой шкале, поэтому это
+// единица измерения, а не отдельный режим (как и %/мм-на-метр).
 // PERCENT/MM_PER_M — тот же угол, пересчитанный как строительный уклон
 // (tan(angle)*100 и tan(angle)*1000 соответственно).
 enum class AngleUnit : uint8_t {
     DEGREES,
+    RADIANS,
     PERCENT,
     MM_PER_M
 };
@@ -131,7 +134,10 @@ struct Target_settings
 // (например, из-за отключения питания посреди записи) от валидной.
 struct PersistedSettings
 {
-    static constexpr uint8_t MAGIC = 0xA6;   // версия структуры увеличена — добавлены axis/unit
+    // MAGIC увеличен: значения AngleUnit сдвинулись (раньше 1=PERCENT,
+    // теперь 1=RADIANS) — без этого старая EEPROM молча "переехала" бы на
+    // другой юнит вместо честного сброса на значения по умолчанию.
+    static constexpr uint8_t MAGIC = 0xA7;
 
     uint8_t  magic{MAGIC};
     SoundLevel      sound_level{SoundLevel::NORMAL};

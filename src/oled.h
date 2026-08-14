@@ -61,12 +61,19 @@ protected:
     void print_base_page_common();
     void send_num_buffer(const char* text);
 
-    // Печатает число как "left" + "." + "right" с точкой на фиксированной
-    // позиции экрана (см. .cpp) — левая часть выравнивается по правому краю
-    // строго до этой точки, а не через общий паддинг всей строки. Так минус
-    // и все разряды остаются в своих колонках независимо от того, сколько
-    // значащих цифр в числе (напр. переход 9.9 -> 10.0 не сдвигает ничего).
-    void send_split_num_buffer(const char* left, const char* right);
+    // Печатает число как "left" + "." + "right" с точкой на позиции dot_x
+    // (в пикселях экрана) — левая часть выравнивается по правому краю строго
+    // до этой точки, а не через общий паддинг всей строки. Так минус и все
+    // разряды остаются в своих колонках независимо от того, сколько значащих
+    // цифр в числе (напр. переход 9.9 -> 10.0 не сдвигает ничего), пока
+    // dot_x не меняется. dot_x меняется только при смене раскладки (напр.
+    // смена Unit на формат с другим числом целых разрядов), не на каждый кадр.
+    void send_split_num_buffer(const char* left, const char* right, int dot_x);
+
+    // dot_x для 2 (Deg) и 1 (Rad) целого разряда — историческое положение,
+    // подобранное под ширину "±99.9". Для 3 разрядов (%, мм/м) он не влезает
+    // (см. print_unit_value) и используется отдельная, более левая позиция.
+    static constexpr int SPLIT_DOT_X_DEFAULT = 55;
 
     // Общий рендер трёх подписей внизу экрана (позиции x=0/52/100, строка 7).
     // Используется и для базового экрана (zero/mode/menu), и для меню и
@@ -100,6 +107,12 @@ public:
     OLED_Degrees_90() = default;
     void print_base_page() override;
     void update_angle_value(float angle) override;
+
+private:
+    // Форматирование под текущий Unit (см. update_angle_value): int_digits —
+    // сколько целых разрядов у формата (1=Rad, 2=Deg, 3=%/мм-на-метр),
+    // max_abs — граница отсечения (клэмп) для этого формата.
+    void print_unit_value(float value, uint8_t int_digits, float max_abs);
 };
 
 // Режим 90° + уставка целевого угла. update_angle_value() наследуется как
@@ -127,10 +140,4 @@ public:
     // Стрелка направления к уставке: +1 = наклонить в одну сторону (текущий
     // угол меньше уставки), -1 = в другую, 0 = в допуске (без стрелки).
     void update_direction_arrow(int8_t direction);
-};
-
-class OLED_Radians : public OLED {
-public:
-    void print_base_page() override;
-    void update_angle_value(float angle) override;
 };
