@@ -7,6 +7,9 @@
 #include "settings.h"
 #include "icons.h"
 
+// Сколько пунктов меню видно одновременно при scale=1.
+static constexpr uint8_t MENU_VISIBLE_ITEMS = 6;
+
 class OLED {
 public:
     OLED() = default;
@@ -37,10 +40,12 @@ public:
     // Яркость через контраст SSD1306 — три фиксированные ступени, см. .cpp.
     void apply_brightness(BrightnessLevel level);
 
-    // Общий рендер списка пунктов меню — каждая строка уже полностью
-    // отформатирована вызывающим кодом (main.cpp), в т.ч. текст значения.
-    // Эта функция только рисует список и отмечает текущий пункт "> ".
-    void print_menu_page(const char* const lines[], uint8_t line_count, uint8_t cursor_index);
+    // Общий рендер списка пунктов меню с прокруткой — рисует не более
+    // MENU_VISIBLE_ITEMS (3) пункта при scale=2. scroll_offset указывает,
+    // какой пункт массива отобразить первым, visible_cursor — индекс
+    // выделенного пункта в видимой области (0..2).
+    void print_menu_page(const char* const lines[], uint8_t line_count,
+                          uint8_t scroll_offset, uint8_t visible_cursor);
 
     // Экран калибровки: обратный отсчёт (0-9) большими цифрами + инструкция.
     void print_calibration_countdown(uint8_t number);

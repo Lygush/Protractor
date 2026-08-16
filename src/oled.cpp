@@ -154,24 +154,33 @@ void OLED::apply_brightness(BrightnessLevel level)
     oled.setContrast(contrast);
 }
 
-// Список пунктов меню: текущий пункт (cursor_index) рисуется инвертированным.
-void OLED::print_menu_page(const char* const lines[], uint8_t line_count, uint8_t cursor_index)
+// Список пунктов меню с прокруткой: рисуем не более MENU_VISIBLE_ITEMS пунктов.
+// scroll_offset — какой пункт массива отобразить первым,
+// visible_cursor — индекс выделенного пункта в видимой области (0..MENU_VISIBLE_ITEMS-1).
+void OLED::print_menu_page(const char* const lines[], uint8_t line_count,
+                            uint8_t scroll_offset, uint8_t visible_cursor)
 {
     oled.clear();
+
+    // Шрифт scale=1 (8px в высоту). На экран помещается до 6 пунктов
+    // (строки 0..5), строка 6 зарезервирована под футер.
     oled.setScale(1);
 
-    for (uint8_t i = 0; i < line_count; i++) {
+    uint8_t visible_count = (line_count < MENU_VISIBLE_ITEMS) ? line_count : MENU_VISIBLE_ITEMS;
+
+    for (uint8_t i = 0; i < visible_count; i++) {
+        uint8_t actual_idx = scroll_offset + i;
         oled.setCursor(0, i);
-        if (i == cursor_index) {
+        if (i == visible_cursor) {
             oled.invertText(true);
-            oled.print(lines[i]);
+            oled.print(lines[actual_idx]);
             oled.invertText(false);
         } else {
-            oled.print(lines[i]);
+            oled.print(lines[actual_idx]);
         }
     }
 
-    // Подписи кнопок внизу (строка 7)
+    // Подписи кнопок внизу — на строке 6 (Y=48..55)
     print_footer_labels(F("^"), F("v"), F("OK"));
     oled.update();
 }

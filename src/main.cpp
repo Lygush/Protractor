@@ -116,6 +116,7 @@ static constexpr uint8_t MENU_ITEM_COUNT = (uint8_t)MenuItem::COUNT;
 bool    menu_open          = false;
 bool    menu_editing_value = false;
 uint8_t menu_cursor        = 0;
+uint8_t menu_scroll_offset = 0;
 
 static constexpr uint32_t SLEEP_TIMEOUT_OPTIONS_MS[] = { 15000UL, 30000UL, 60000UL, 120000UL };
 static constexpr uint8_t  SLEEP_TIMEOUT_OPTIONS_COUNT =
@@ -367,6 +368,19 @@ void format_menu_lines() {
     for (uint8_t i = 0; i < MENU_ITEM_COUNT; i++) menu_line_ptrs[i] = menu_line_buf[i];
 }
 
+void update_menu_scroll() {
+    if (MENU_ITEM_COUNT <= MENU_VISIBLE_ITEMS) {
+        menu_scroll_offset = 0;
+        return;
+    }
+
+    if (menu_cursor < menu_scroll_offset) {
+        menu_scroll_offset = menu_cursor;
+    } else if (menu_cursor >= menu_scroll_offset + MENU_VISIBLE_ITEMS) {
+        menu_scroll_offset = menu_cursor - MENU_VISIBLE_ITEMS + 1;
+    }
+}
+
 void render_menu() {
     format_menu_lines();
 
@@ -400,14 +414,21 @@ void render_menu() {
         }
     }
 
-    oled->print_menu_page(menu_line_ptrs, MENU_ITEM_COUNT, menu_cursor);
+    update_menu_scroll();
+
+    uint8_t visible_cursor = (menu_cursor >= menu_scroll_offset)
+                                ? (uint8_t)(menu_cursor - menu_scroll_offset)
+                                : 0;
+
+    oled->print_menu_page(menu_line_ptrs, MENU_ITEM_COUNT, menu_scroll_offset, visible_cursor);
 }
 
 void open_menu() {
     menu_open           = true;
     menu_editing_value  = false;
     menu_cursor         = 0;
-    angle_held           = false;
+    menu_scroll_offset  = 0;
+    angle_held          = false;
     render_menu();
 }
 
