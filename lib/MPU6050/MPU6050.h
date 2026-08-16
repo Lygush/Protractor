@@ -436,6 +436,8 @@ THE SOFTWARE.
 
 // note: DMP code memory blocks defined at end of header file
 
+class W25Q32Read; // форвард-декларация; полный #include только в MPU6050.cpp
+
 class MPU6050 {
     public:
         MPU6050(uint8_t address=MPU6050_DEFAULT_ADDRESS);
@@ -812,6 +814,11 @@ class MPU6050 {
         void readMemoryBlock(uint8_t *data, uint16_t dataSize, uint8_t bank=0, uint8_t address=0);
         bool writeMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t bank=0, uint8_t address=0, bool verify=true, bool useProgMem=false);
         bool writeProgMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t bank=0, uint8_t address=0, bool verify=true);
+
+        // Загрузка DMP-блоба с внешней SPI flash (W25Q32) вместо PROGMEM —
+        // экономит 1929 байт flash самого МК. См. Protractor_ExtFlash_PLAN.md.
+        bool writeExtMemoryBlock(W25Q32Read &flash, uint32_t extAddr, uint16_t dataSize,
+                                  uint8_t bank=0, uint8_t address=0, bool verify=true);
 
         bool writeDMPConfigurationSet(const uint8_t *data, uint16_t dataSize, bool useProgMem=false);
         bool writeProgDMPConfigurationSet(const uint8_t *data, uint16_t dataSize);

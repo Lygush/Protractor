@@ -7,6 +7,8 @@
 #include "mpu.h"
 #include "battery.h"
 #include "sleep_manager.h"
+#include "w25q32_read.h"   // внешняя SPI flash — DMP-блоб MPU6050 (и позже шрифт/иконки)
+#include "flash_map.h"
 
 // Раскомментируй, чтобы видеть напряжение/процент/состояние батареи в Serial.
 // #define BATTERY_DEBUG
@@ -25,6 +27,11 @@ union OledStorage {
 
 // ─── Глобальные объекты ────────────────────────────────────────────────────
 Settings settings;
+// Внешняя SPI flash W25Q32: CS=D10, SCK=D13, MISO=D12, MOSI=D11 (аппаратный
+// SPI, те же пины, что и в ProtractorFlashWriter). DMP-блоб MPU6050 читается
+// отсюда вместо PROGMEM — см. Protractor_ExtFlash_PLAN.md.
+W25Q32Read extFlash(10);
+
 MPU      mpu;
 Battery  battery;
 SleepManager sleep_manager;
@@ -518,6 +525,15 @@ void setup() {
     oled->apply_brightness(settings.get_display_settings()->brightness);
     blink_led(2);
 
+    // Внешняя flash с DMP-блобом MPU6050 (и шрифтом/иконками — следующие
+    // шаги переноса). Если чип не отвечает как Winbond — дальше идти нет
+    // смысла: DMP не загрузится, лучше понятный стоп, чем зависание/мусор.
+    extFlash.begin();
+    if (!extFlash.present()) {
+        oled->print_calibration_message("EXT FLASH FAIL");
+        while (1) {}
+    }
+
     mpu.init(oled, settings.get_mpu_settings());
     blink_led(3);
 
@@ -660,8 +676,19 @@ void loop() {
         }
 
         if (!editing_target && !menu_open && !angle_held) {
-            AngleUnit unit = settings.get_display_settings()->unit;
-            oled->update_angle_value(compute_display_value(unit, current_axis()));
+            // MODE_360 концептуально не поддерживает выбор Unit (Radians/%/мм-на-м)
+            // из настроек — это относится только к MODE_90/MODE_90_TARGET (см.
+            // комментарий у AngleUnit::unit в settings.h). OLED_Degrees_360::
+            // update_angle_value() сам конвертирует радианы в градусы внутри —
+            // если отдать ему уже готовое значение в единицах Unit (по умолчанию
+            // DEGREES), получится двойная конвертация и вздор на экране. Поэтому
+            // для 360 всегда отдаём угол в радианах напрямую, в обход Unit.
+            if (current_mode == MODE_360) {
+                oled->update_angle_value(-mpu.get_angle_radians(current_axis()));
+            } else {
+                AngleUnit unit = settings.get_display_settings()->unit;
+                oled->update_angle_value(compute_display_value(unit, current_axis()));
+            }
         }
 
         if (!editing_target && !menu_open && sleep_manager.update(mpu.get_angle_degrees(current_axis()))) {

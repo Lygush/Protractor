@@ -36,6 +36,7 @@ THE SOFTWARE.
 */
 
 #include "MPU6050.h"
+#include "w25q32_read.h"  // добавлено для writeExtMemoryBlock() — чтение DMP-блоба с внешней flash
 
 /** Specific address constructor.
  * @param address I2C address, uses default I2C address if none is specified
@@ -3151,6 +3152,43 @@ bool MPU6050::writeMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t b
 }
 bool MPU6050::writeProgMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t bank, uint8_t address, bool verify) {
     return writeMemoryBlock(data, dataSize, bank, address, verify, true);
+}
+// Загрузка DMP-блоба с внешней W25Q32 вместо PROGMEM. Буфер на стеке
+// (чанк всего 16 байт — MPU6050_DMP_MEMORY_CHUNK_SIZE), malloc не нужен.
+// Логика идентична writeMemoryBlock(), только источник данных — SPI flash.
+bool MPU6050::writeExtMemoryBlock(W25Q32Read &flash, uint32_t extAddr, uint16_t dataSize,
+                                   uint8_t bank, uint8_t address, bool verify) {
+    setMemoryBank(bank);
+    setMemoryStartAddress(address);
+    uint8_t chunkSize;
+    uint8_t buffer[MPU6050_DMP_MEMORY_CHUNK_SIZE];
+    uint8_t verifyBuffer[MPU6050_DMP_MEMORY_CHUNK_SIZE];
+    uint16_t i;
+
+    for (i = 0; i < dataSize;) {
+        chunkSize = MPU6050_DMP_MEMORY_CHUNK_SIZE;
+        if (i + chunkSize > dataSize) chunkSize = dataSize - i;
+        if (chunkSize > 256 - address) chunkSize = 256 - address;
+
+        flash.readBlock(extAddr + i, buffer, chunkSize);
+        I2Cdev::writeBytes(devAddr, MPU6050_RA_MEM_R_W, chunkSize, buffer);
+
+        if (verify) {
+            setMemoryBank(bank);
+            setMemoryStartAddress(address);
+            I2Cdev::readBytes(devAddr, MPU6050_RA_MEM_R_W, chunkSize, verifyBuffer);
+            if (memcmp(buffer, verifyBuffer, chunkSize) != 0) return false;
+        }
+
+        i += chunkSize;
+        address += chunkSize;
+        if (i < dataSize) {
+            if (address == 0) bank++;
+            setMemoryBank(bank);
+            setMemoryStartAddress(address);
+        }
+    }
+    return true;
 }
 bool MPU6050::writeDMPConfigurationSet(const uint8_t *data, uint16_t dataSize, bool useProgMem) {
     uint8_t *progBuffer = 0;

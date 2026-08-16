@@ -1,6 +1,25 @@
 #include "oled.h"
+#include "flash_map.h"
+#include "w25q32_read.h"
 
 //////////////// OLED BASE CLASS /////////////////////
+
+// extFlash объявлен и инициализирован (.begin()) в main.cpp/setup(), задолго
+// до первой отрисовки иконки — см. Protractor_ExtFlash_PLAN.md п.4.3.
+extern W25Q32Read extFlash;
+
+// Общий буфер под самую большую иконку (mode_360, 68 байт) — иконки рисуются
+// не каждый кадр (см. update_battery() — ранний return, пока % не сменился;
+// print_base_page() — только при входе в режим), так что задержка SPI-чтения
+// перед drawBitmapRAM() не чувствуется на глаз.
+static uint8_t icon_buf[ICON_MAX_SIZE];
+
+static void drawIconFromFlash(GyverOLED<SSD1306_128x64, OLED_NO_BUFFER>& disp,
+                               int x, int y, uint32_t offset, uint32_t size,
+                               int width, int height) {
+    extFlash.readBlock(ADDR_ICONS + offset, icon_buf, size);
+    disp.drawBitmapRAM(x, y, icon_buf, width, height);
+}
 
 void OLED::init(Display_settings *disp_settings)
 {
@@ -46,7 +65,7 @@ void OLED::update_battery(bool blink_visible)
     oled.clear(x, y, x + w, y + h);
 
     // Контур рисуется всегда — он же определяет "пустые" (незажжённые) слоты.
-    oled.drawBitmap(x, y, battery_outline_25x12, w, h);
+    drawIconFromFlash(oled, x, y, ICON_OFF_BATTERY_OUTLINE, ICON_SIZE_BATTERY_OUTLINE, w, h);
 
     static constexpr uint8_t SEG_W    = 3;
     static constexpr uint8_t SEG_H    = 12; // одна страница — см. комментарий у battery_segment_3x8
@@ -55,7 +74,7 @@ void OLED::update_battery(bool blink_visible)
 
     for (uint8_t i = 0; i < segments_lit; i++) {
         int seg_x = x + SEG_X0 + i * SEG_STEP;
-        oled.drawBitmap(seg_x, y, battery_segment_3x12, SEG_W, SEG_H);
+        drawIconFromFlash(oled, seg_x, y, ICON_OFF_BATTERY_SEGMENT, ICON_SIZE_BATTERY_SEGMENT, SEG_W, SEG_H);
     }
 
     oled.update(x, y, x + w, y + h);
@@ -229,15 +248,20 @@ void OLED_Degrees_360::print_base_page()
 {
     oled.clear();
     print_base_page_common();
-    oled.drawBitmap(47, 0, mode_360_34x14, 34, 14);
-    oled.drawBitmap(110, 0, circle_15x15, 15, 15);
+    drawIconFromFlash(oled, 47, 0, ICON_OFF_MODE_360, ICON_SIZE_MODE_360, 34, 14);
+    drawIconFromFlash(oled, 110, 0, ICON_OFF_CIRCLE_15, ICON_SIZE_CIRCLE_15, 15, 15);
     oled.update();
 }
 
 void OLED_Degrees_360::update_angle_value(float angle)
 {
     angle = degrees(angle);
-    if (angle < 0) angle += 360;
+    // Полноценный wrap в [0,360) через fmod — одиночного "+360" недостаточно:
+    // yaw копится без ограничений, при длительной работе/дрейфе угол может
+    // уйти за пределы одного оборота (например, ниже -360), и один "+360"
+    // не компенсирует это. fmodf корректно сворачивает любое значение.
+    angle = fmodf(angle, 360.0f);
+    if (angle < 0) angle += 360.0f;
 
     int deg = (int)(angle + 0.5f);
     if (deg >= 360) deg = 0;
@@ -256,8 +280,8 @@ void OLED_Degrees_90::print_base_page()
 {
     oled.clear();
     print_base_page_common();
-    oled.drawBitmap(52, 0, mode_90_24x14, 24, 14);
-    oled.drawBitmap(110, 0, circle_15x15, 15, 15);
+    drawIconFromFlash(oled, 52, 0, ICON_OFF_MODE_90, ICON_SIZE_MODE_90, 24, 14);
+    drawIconFromFlash(oled, 110, 0, ICON_OFF_CIRCLE_15, ICON_SIZE_CIRCLE_15, 15, 15);
     oled.update();
 }
 
@@ -336,7 +360,7 @@ void OLED_Degrees_90_Target::print_base_page()
     oled.setScale(1);
     oled.setCursor(46, 1);
     oled.print(F("90 TGT")); //показывать целевой угол.
-    oled.drawBitmap(110, 0, circle_15x15, 15, 15);
+    drawIconFromFlash(oled, 110, 0, ICON_OFF_CIRCLE_15, ICON_SIZE_CIRCLE_15, 15, 15);
     oled.update();
 }
 
@@ -376,7 +400,7 @@ void OLED_Degrees_90_Target::update_direction_arrow(int8_t direction)
 {
     static constexpr int x = 30, y = 0, w = 8, h = 8;
     oled.clear(x, y, x + w, y + h);
-    if (direction > 0)      oled.drawBitmap(x, y, arrow_up_8x8, w, h);
-    else if (direction < 0) oled.drawBitmap(x, y, arrow_down_8x8, w, h);
+    if (direction > 0)      drawIconFromFlash(oled, x, y, ICON_OFF_ARROW_UP, ICON_SIZE_ARROW_UP, w, h);
+    else if (direction < 0) drawIconFromFlash(oled, x, y, ICON_OFF_ARROW_DOWN, ICON_SIZE_ARROW_DOWN, w, h);
     oled.update(x, y, x + w, y + h);
 }

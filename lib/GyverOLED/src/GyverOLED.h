@@ -654,8 +654,14 @@ class GyverOLED {
         }
     }
 
-    // вывести битмап
-    void drawBitmap(int x, int y, const uint8_t* frame, int width, int height, uint8_t invert = 0, byte mode = 0) {
+    // Иконки теперь всегда приходят из внешней SPI flash во временный
+    // SRAM-буфер (см. src/oled.cpp, drawIconFromFlash) — оригинальная
+    // PROGMEM-версия drawBitmap() в проекте больше нигде не вызывается,
+    // так что вместо двух функций/общей реализации с оверхедом на вызов
+    // (AVR дорого стоит передача 8 параметров между функциями) — просто
+    // одна функция сразу под SRAM-источник, без pgm_read_word и без
+    // отдельного noinline-хелпера.
+    void drawBitmapRAM(int x, int y, const uint8_t* frame, int width, int height, uint8_t invert = 0, byte mode = 0) {
         _x = 0;
         _y = 0;
         if (invert) invert = 255;
@@ -668,12 +674,12 @@ class GyverOLED {
         if (!_BUFF) beginData();
         for (int X = x, countX = 0; X < x + width; X++, countX++) {  // в пикселях
             byte prevData = 0;
-            if (_inRange(X, 0, _maxX)) {                                                                                    // мы внутри дисплея по X
-                for (int Y = y >> 3, countY = 0; Y < shiftY; Y++, countY++) {                                               // в строках (пикс/8)
-                    byte data = pgm_read_word(&(frame[countY * width + countX])) ^ invert;                                  // достаём байт
-                    if (_shift == 0) {                                                                                      // без сдвига по Y
-                        if (_inRange(Y, 0, _maxRow)) writeData(data, Y, X, mode);                                           // мы внутри дисплея по Y
-                    } else {                                                                                                // со сдвигом по Y
+            if (_inRange(X, 0, _maxX)) {                                                                  // мы внутри дисплея по X
+                for (int Y = y >> 3, countY = 0; Y < shiftY; Y++, countY++) {                              // в строках (пикс/8)
+                    byte data = frame[countY * width + countX] ^ invert;   // прямое чтение SRAM, без pgm_read_word
+                    if (_shift == 0) {                                                                     // без сдвига по Y
+                        if (_inRange(Y, 0, _maxRow)) writeData(data, Y, X, mode);                          // мы внутри дисплея по Y
+                    } else {                                                                                // со сдвигом по Y
                         if (_inRange(Y, 0, _maxRow)) writeData((prevData >> (8 - _shift)) | (data << _shift), Y, X, mode);  // задвигаем
                         prevData = data;
                     }
