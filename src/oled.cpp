@@ -167,6 +167,9 @@ void OLED::print_menu_page(const char* const lines[], uint8_t line_count,
                             uint8_t scroll_offset, uint8_t visible_cursor)
 {
     oled.clear();
+
+    // Шрифт scale=1 (8px в высоту). На экран помещается до 6 пунктов
+    // (строки 0..5), строка 6 зарезервирована под футер.
     oled.setScale(1);
 
     uint8_t visible_count = (line_count < MENU_VISIBLE_ITEMS) ? line_count : MENU_VISIBLE_ITEMS;
@@ -177,8 +180,10 @@ void OLED::print_menu_page(const char* const lines[], uint8_t line_count,
         if (i == visible_cursor) {
             oled.invertText(true);
             oled.print(lines[actual_idx]);
+            oled.print(lines[actual_idx]);
             oled.invertText(false);
         } else {
+            oled.print(lines[actual_idx]);
             oled.print(lines[actual_idx]);
         }
     }
