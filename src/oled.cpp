@@ -154,24 +154,36 @@ void OLED::apply_brightness(BrightnessLevel level)
     oled.setContrast(contrast);
 }
 
-// Список пунктов меню: текущий пункт (cursor_index) рисуется инвертированным.
-void OLED::print_menu_page(const char* const lines[], uint8_t line_count, uint8_t cursor_index)
+// Список пунктов меню с прокруткой: рисуем не более MENU_VISIBLE_ITEMS пунктов.
+// scroll_offset — какой пункт массива отобразить первым,
+// visible_cursor — индекс выделенного пункта в видимой области (0..MENU_VISIBLE_ITEMS-1).
+//
+// Прямая отрисовка (без RAM-буфера), но каждый пункт — на СВОЕЙ странице,
+// с одной пустой страницей-зазором после (кроме последнего): row = i*2 в
+// терминах setCursor() (постраничные координаты). См. комментарий у
+// MENU_VISIBLE_ITEMS в oled.h — почему зазор сделан целой страницей, а не
+// в пикселях.
+void OLED::print_menu_page(const char* const lines[], uint8_t line_count,
+                            uint8_t scroll_offset, uint8_t visible_cursor)
 {
     oled.clear();
     oled.setScale(1);
 
-    for (uint8_t i = 0; i < line_count; i++) {
-        oled.setCursor(0, i);
-        if (i == cursor_index) {
+    uint8_t visible_count = (line_count < MENU_VISIBLE_ITEMS) ? line_count : MENU_VISIBLE_ITEMS;
+
+    for (uint8_t i = 0; i < visible_count; i++) {
+        uint8_t actual_idx = scroll_offset + i;
+        oled.setCursor(MENU_ITEM_X0, i * 2); // page-units: страница i*2, пустая i*2+1 — зазор
+        if (i == visible_cursor) {
             oled.invertText(true);
-            oled.print(lines[i]);
+            oled.print(lines[actual_idx]);
             oled.invertText(false);
         } else {
-            oled.print(lines[i]);
+            oled.print(lines[actual_idx]);
         }
     }
 
-    // Подписи кнопок внизу (строка 7)
+    // Подписи кнопок внизу — на странице 7 (Y=56..63), рисуются напрямую как и раньше.
     print_footer_labels(F("^"), F("v"), F("OK"));
     oled.update();
 }
@@ -396,11 +408,26 @@ void OLED_Degrees_90_Target::update_target_edit(bool negative, uint8_t tens, uin
     send_split_num_buffer(left, right, SPLIT_DOT_X_DEFAULT);
 }
 
+// Число (send_split_num_buffer) занимает всю полосу y=16..47 через
+// createBuffer(...,fill=0) и на каждый кадр стирает всё, что было в этой
+// полосе, включая область стрелки — поэтому стрелку перерисовываем здесь же,
+// сразу после базового форматирования числа (см. update_angle_value ниже).
+void OLED_Degrees_90_Target::update_angle_value(float angle)
+{
+    OLED_Degrees_90::update_angle_value(angle);
+    draw_direction_arrow_now();
+}
+
+void OLED_Degrees_90_Target::draw_direction_arrow_now()
+{
+    oled.clear(ARROW_X, ARROW_Y, ARROW_X + ARROW_W, ARROW_Y + ARROW_H);
+    if (last_direction > 0)      drawIconFromFlash(oled, ARROW_X, ARROW_Y, ICON_OFF_ARROW_UP, ICON_SIZE_ARROW_UP, ARROW_W, ARROW_H);
+    else if (last_direction < 0) drawIconFromFlash(oled, ARROW_X, ARROW_Y, ICON_OFF_ARROW_DOWN, ICON_SIZE_ARROW_DOWN, ARROW_W, ARROW_H);
+    oled.update(ARROW_X, ARROW_Y, ARROW_X + ARROW_W, ARROW_Y + ARROW_H);
+}
+
 void OLED_Degrees_90_Target::update_direction_arrow(int8_t direction)
 {
-    static constexpr int x = 30, y = 0, w = 8, h = 8;
-    oled.clear(x, y, x + w, y + h);
-    if (direction > 0)      drawIconFromFlash(oled, x, y, ICON_OFF_ARROW_UP, ICON_SIZE_ARROW_UP, w, h);
-    else if (direction < 0) drawIconFromFlash(oled, x, y, ICON_OFF_ARROW_DOWN, ICON_SIZE_ARROW_DOWN, w, h);
-    oled.update(x, y, x + w, y + h);
+    last_direction = direction;
+    draw_direction_arrow_now();
 }

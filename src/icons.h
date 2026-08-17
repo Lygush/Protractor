@@ -46,6 +46,12 @@
 #define ICON_OFF_ARROW_DOWN        210UL
 #define ICON_SIZE_ARROW_DOWN       8UL    // 8x8 -> 8*1
 
+#define ICON_OFF_ARROW_LEFT        218UL
+#define ICON_SIZE_ARROW_LEFT       8UL    // 8x8 -> 8*1
+
+#define ICON_OFF_ARROW_RIGHT       226UL
+#define ICON_SIZE_ARROW_RIGHT      8UL    // 8x8 -> 8*1
+
 // Самая большая иконка (mode_360, 68 байт) — под неё общий RAM-буфер
 // в oled.cpp, чтобы не заводить пять разных статических массивов.
 #define ICON_MAX_SIZE               68UL
