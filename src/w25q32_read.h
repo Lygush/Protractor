@@ -43,6 +43,27 @@ public:
         return b;
     }
 
+    // Power-down (0xB9) — переводит чип в режим глубокого сна (~1мкА вместо
+    // ~4-15мА в холостом режиме). Вызывать перед тем, как МК сам уходит в
+    // sleep_cpu() (см. sleep_manager.cpp / SleepManager::enter_sleep()) —
+    // иначе флеш всё время сна продолжает потреблять ток вхолостую.
+    void powerDown() const {
+        digitalWrite(_cs, LOW);
+        SPI.transfer(0xB9);
+        digitalWrite(_cs, HIGH);
+    }
+
+    // Release from Power-down (0xAB) — выводит чип обратно в рабочий режим.
+    // По даташиту чипу нужно tRES1 (~3мкс) до готовности принять следующую
+    // команду (чтение и т.п.) — delayMicroseconds(20) с запасом. Обязательно
+    // вызывать перед первым readBlock()/readByte() после powerDown().
+    void wakeUp() const {
+        digitalWrite(_cs, LOW);
+        SPI.transfer(0xAB);
+        digitalWrite(_cs, HIGH);
+        delayMicroseconds(20);
+    }
+
 private:
     uint8_t readJedecManufacturer() {
         digitalWrite(_cs, LOW);

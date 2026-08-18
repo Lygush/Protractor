@@ -29,7 +29,7 @@ public:
 
     // Рисует иконку батареи. blink_visible=false используется для фазы "погашено"
     // при мигании в состоянии LOW_BATTERY (см. вызывающий код в main.cpp).
-    void update_battery(bool blink_visible = true);
+    void update_battery(bool blink_visible = true, bool force_redraw = false);
     void set_battery_percent(uint8_t percent) { battery_percent = percent; }
     void set_battery_state(BatteryState state) { battery_state = state; }
 

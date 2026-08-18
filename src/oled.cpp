@@ -37,7 +37,7 @@ void OLED::init(Display_settings *disp_settings)
     oled_settings = disp_settings;
 }
 
-void OLED::update_battery(bool blink_visible)
+void OLED::update_battery(bool blink_visible, bool force_redraw)
 {
     const int x = 0, y = 0;
     const int w = 25, h = 12;
@@ -58,8 +58,11 @@ void OLED::update_battery(bool blink_visible)
 
     // Экран не трогаем, если картинка не изменится — так апдейт (вызываемый
     // на любое изменение процента) не дёргает дисплей, пока не изменится
-    // именно видимое число сегментов.
-    if (segments_lit == last_drawn_battery_segments) return;
+    // именно видимое число сегментов. force_redraw — исключение: вызывается
+    // из мест, где перед этим прошёл полный oled.clear() экрана (выход из
+    // меню/редактирования уставки), и физически на экране иконки уже нет,
+    // хотя кэш "последнего нарисованного" ещё думает, что она там есть.
+    if (!force_redraw && segments_lit == last_drawn_battery_segments) return;
     last_drawn_battery_segments = segments_lit;
 
     oled.clear(x, y, x + w, y + h);
@@ -97,7 +100,7 @@ void OLED::print_footer_labels(const __FlashStringHelper* left,
 
 void OLED::print_base_page_common()
 {
-    update_battery();
+    update_battery(true, true);
     oled.setScale(1);
     print_footer_labels(F("zero"), F("mode"), F("menu"));
     oled.update();
@@ -176,15 +179,33 @@ void OLED::print_menu_page(const char* const lines[], uint8_t line_count,
 
     for (uint8_t i = 0; i < visible_count; i++) {
         uint8_t actual_idx = scroll_offset + i;
-        oled.setCursor(MENU_ITEM_X0, i * 2); // page-units: страница i*2, пустая i*2+1 — зазор
+        const char* text = lines[actual_idx];
+
         if (i == visible_cursor) {
+            // Подложка выделения с отступом 1px с каждой стороны от текста —
+            // без него инверсия шла строго по границам символов, и буквы
+            // визуально "обрезались" о рамку. Текст занимает ровно одну
+            // страницу по высоте (8px, y0..y0+7); 1px сверху/снизу уходит в
+            // соседнюю пустую страницу-зазор (см. MENU_VISIBLE_ITEMS выше),
+            // кроме последнего видимого пункта — там снизу футер (page 7),
+            // поэтому там низ подложки прижат к 55px, в футер не залезаем.
+            int text_y0 = i * 16;                    // пиксельная Y (страница i*2 * 8px)
+            int text_w  = (int)strlen(text) * 6;      // 6px на символ (5px глиф + 1px spacing)
+            int rect_x0 = MENU_ITEM_X0 - 1;
+            int rect_x1 = MENU_ITEM_X0 + text_w;      // +1px справа от текста
+            int rect_y0 = (text_y0 > 0) ? text_y0 - 1 : 0;
+            int rect_y1 = text_y0 + 8;                // +1px снизу от текста
+            if (rect_y1 > 55) rect_y1 = 55;            // не залезаем в футер (страница 7)
+
+            oled.rect(rect_x0, rect_y0, rect_x1, rect_y1, OLED_FILL);
+
+            oled.setCursor(MENU_ITEM_X0, i * 2); // page-units: страница i*2, пустая i*2+1 — зазор
             oled.invertText(true);
-            oled.print(lines[actual_idx]);
-            oled.print(lines[actual_idx]);
+            oled.print(text);
             oled.invertText(false);
         } else {
-            oled.print(lines[actual_idx]);
-            oled.print(lines[actual_idx]);
+            oled.setCursor(MENU_ITEM_X0, i * 2); // page-units: страница i*2, пустая i*2+1 — зазор
+            oled.print(text);
         }
     }
 
@@ -384,7 +405,7 @@ void OLED_Degrees_90_Target::print_base_page()
 void OLED_Degrees_90_Target::print_target_edit_page()
 {
     oled.clear();
-    update_battery();
+    update_battery(true, true);
     oled.setScale(1);
     print_footer_labels(F("^"), F("v"), F("OK"));
     oled.update();
@@ -433,6 +454,12 @@ void OLED_Degrees_90_Target::draw_direction_arrow_now()
 
 void OLED_Degrees_90_Target::update_direction_arrow(int8_t direction)
 {
+    // Раньше здесь сразу вызывался draw_direction_arrow_now() — но эта
+    // перерисовка тут же стиралась следующим вызовом update_angle_value()
+    // (он обязан перерисовать стрелку заново, т.к. полоса y=16..47 целиком
+    // стирается печатью числа — см. комментарий у update_angle_value ниже).
+    // Получалось два clear()+drawIcon()+I2C update() за один DMP-кадр вместо
+    // одного — отсюда видимое мерцание стрелки. Теперь здесь только
+    // запоминаем направление, а рисуем один раз — из update_angle_value().
     last_direction = direction;
-    draw_direction_arrow_now();
 }

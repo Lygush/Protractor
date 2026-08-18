@@ -72,6 +72,7 @@ void Settings::load_persisted()
         oled_settings.unit                   = loaded.unit;
         sleep_settings.inactivity_timeout_ms = loaded.sleep_timeout_ms;
         mpu_settings.axis                    = loaded.axis;
+        target_settings.tolerance_deg        = loaded.target_tolerance_deg;
     } else {
         save_persisted();
     }
@@ -86,6 +87,7 @@ void Settings::save_persisted()
     s.unit                 = oled_settings.unit;
     s.sleep_timeout_ms     = sleep_settings.inactivity_timeout_ms;
     s.axis                 = mpu_settings.axis;
+    s.target_tolerance_deg = target_settings.tolerance_deg;
     s.checksum             = compute_checksum(s);
     lgt_eeprom_write_block(reinterpret_cast<uint8_t*>(&s), EEPROM_ADDR, sizeof(s));
 }

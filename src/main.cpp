@@ -562,8 +562,13 @@ void setup() {
 
     oled->print_base_page();
 
-    pinMode(D7, OUTPUT);
-    digitalWrite(D7, HIGH);
+    // ВНИМАНИЕ: раньше здесь было pinMode(D7, OUTPUT); digitalWrite(D7, HIGH);
+    // — но D7 занят mode_btn (GButton(7), INPUT_PULLUP) и используется PCINT
+    // для пробуждения (см. sleep_manager.cpp). Принудительный перевод в
+    // OUTPUT HIGH ломал саму кнопку (digitalRead читал состояние выхода, а
+    // не нажатие) и создавал риск короткого замыкания VCC->GND через кнопку
+    // при нажатии. Судя по всему, это был мусор от старой ревизии платы —
+    // удалено при аудите 2026-08-17.
 
     battery.init(settings.get_battery_settings());
     apply_battery_to_oled();
@@ -715,9 +720,11 @@ void loop() {
         if (!editing_target && !menu_open && sleep_manager.update(mpu.get_angle_degrees(current_axis()))) {
             mpu.sleep();
             oled->set_power(false);
+            extFlash.powerDown();
 
             sleep_manager.enter_sleep();
 
+            extFlash.wakeUp();
             oled->set_power(true);
             mpu.wake();
             sleep_manager.reset_activity();
