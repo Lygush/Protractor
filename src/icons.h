@@ -40,18 +40,28 @@
 #define ICON_OFF_CIRCLE_15         172UL
 #define ICON_SIZE_CIRCLE_15        30UL   // 15x15 -> 15*2
 
+// Новый рисунок стрелок (заменил старые 8x8 up/down, добавились left/right,
+// которые раньше были только зарезервированы без данных).
 #define ICON_OFF_ARROW_UP          202UL
-#define ICON_SIZE_ARROW_UP         8UL    // 8x8 -> 8*1
+#define ICON_SIZE_ARROW_UP         7UL    // 7x8 -> 7*1
 
-#define ICON_OFF_ARROW_DOWN        210UL
-#define ICON_SIZE_ARROW_DOWN       8UL    // 8x8 -> 8*1
+#define ICON_OFF_ARROW_DOWN        209UL
+#define ICON_SIZE_ARROW_DOWN       7UL    // 7x8 -> 7*1
 
-#define ICON_OFF_ARROW_LEFT        218UL
-#define ICON_SIZE_ARROW_LEFT       8UL    // 8x8 -> 8*1
+#define ICON_OFF_ARROW_LEFT        216UL
+#define ICON_SIZE_ARROW_LEFT       8UL    // 8x7 (округляется до 8 строк) -> 8*1
 
-#define ICON_OFF_ARROW_RIGHT       226UL
-#define ICON_SIZE_ARROW_RIGHT      8UL    // 8x8 -> 8*1
+#define ICON_OFF_ARROW_RIGHT       224UL
+#define ICON_SIZE_ARROW_RIGHT      8UL    // 8x7 (округляется до 8 строк) -> 8*1
 
-// Самая большая иконка (mode_360, 68 байт) — под неё общий RAM-буфер
-// в oled.cpp, чтобы не заводить пять разных статических массивов.
+// Лого-заставка (лягушка), 128x64 -> 128 * (64/8) = 1024 байта. Данные
+// записаны на внешнюю флеш (ProtractorFlashWriter), но отрисовка пока НЕ
+// подключена (см. Задачи.txt п.3) — 1024 байта не влезут в текущий
+// RAM-буфер иконок (icon_buf, см. ICON_MAX_SIZE), под сплэш-скрин
+// потребуется отдельный механизм чтения/отрисовки по частям.
+#define ICON_OFF_FROG_LOGO         232UL
+#define ICON_SIZE_FROG_LOGO        1024UL // 128x64 -> 128*8
+
+// Самая большая ИЗ РИСУЕМЫХ иконок (mode_360, 68 байт) — под неё общий
+// RAM-буфер в oled.cpp. Лого (1024 байта) сюда не входит, т.к. не рисуется.
 #define ICON_MAX_SIZE               68UL

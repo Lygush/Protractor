@@ -17,7 +17,10 @@
 // реальном экране рисует криво/обрезанно — надёжно работает только Y кратный
 // 8. Так зазор получается не "честные" 3-4px, а целая пустая страница (8px),
 // зато без риска снова получить кривые строки.
-static constexpr uint8_t MENU_VISIBLE_ITEMS = 4;
+// Было 4 видимых пункта (страницы 0,2,4,6) — последний упирался вплотную в
+// футер (страница 7, y=56), выделение почти касалось подписей кнопок.
+// 3 пункта (страницы 0,2,4) оставляют два пустых ряда (5,6) перед футером.
+static constexpr uint8_t MENU_VISIBLE_ITEMS = 3;
 static constexpr uint8_t MENU_ITEM_X0 = 2; // отступ текста от левого края экрана, px
 
 class OLED {
@@ -51,13 +54,17 @@ public:
     void apply_brightness(BrightnessLevel level);
 
     // Общий рендер списка пунктов меню с прокруткой — рисует не более
-    // MENU_VISIBLE_ITEMS (4) пунктов при scale=1, каждый на своей странице
+    // MENU_VISIBLE_ITEMS (3) пунктов при scale=1, каждый на своей странице
     // с пустой страницей-зазором между ними (см. комментарий у
     // MENU_VISIBLE_ITEMS выше). scroll_offset указывает, какой пункт массива
     // отобразить первым, visible_cursor — индекс выделенного пункта в
-    // видимой области (0..MENU_VISIBLE_ITEMS-1).
+    // видимой области (0..MENU_VISIBLE_ITEMS-1). editing_value — режим
+    // футера: false — листаем список (иконки вверх/вниз), true — меняем
+    // значение текущего пункта (иконки влево/вправо) — те же битмапы,
+    // что и в индикаторе направления на основном экране.
     void print_menu_page(const char* const lines[], uint8_t line_count,
-                          uint8_t scroll_offset, uint8_t visible_cursor);
+                          uint8_t scroll_offset, uint8_t visible_cursor,
+                          bool editing_value);
 
     // Экран калибровки: обратный отсчёт (0-9) большими цифрами + инструкция.
     void print_calibration_countdown(uint8_t number);
@@ -75,8 +82,19 @@ public:
     }
 
 protected:
-    void print_base_page_common();
+    // menu_hold_enters_edit=true — показывать в верхней строке футера
+    // (page 6) подпись "edit" для menu_btn (только там, где удержание
+    // menu_btn реально что-то делает — MODE_90_TARGET, см. вызов в
+    // OLED_Degrees_90_Target::print_base_page()).
+    void print_base_page_common(bool menu_hold_enters_edit = false);
     void send_num_buffer(const char* text);
+
+    // Общие кусочки футера, продублированные в print_menu_page() (при
+    // scroll-режиме) и в OLED_Degrees_90_Target::draw_target_edit_footer() —
+    // вынесены сюда, чтобы не компилировать один и тот же паттерн дважды
+    // (при критичном остатке флеша каждый дублированный вызов на счету).
+    void draw_updown_footer_icons(); // иконки вверх/вниз в слотах x=0/52, y=56
+    void draw_ok_label();            // текст "OK" в слоте x=100, page 7
 
     // Печатает число как "left" + "." + "right" с точкой на позиции dot_x
     // (в пикселях экрана) — левая часть выравнивается по правому краю строго
@@ -148,9 +166,10 @@ public:
     // форматирование не меняется, вызывается базовая версия.
     void update_angle_value(float angle) override;
 
-    // Вызывается один раз при входе в редактирование — рисует подписи
-    // кнопок (▲/▼/OK вместо zero/mode/menu). Иконок стрелок пока нет,
-    // используются символы "^"/"v" как временная замена.
+    // Вызывается один раз при входе в редактирование — очищает экран и
+    // рисует батарею. Футер (подписи кнопок) рисуется отдельно, из
+    // update_target_edit() — см. draw_target_edit_footer() ниже, там же
+    // почему.
     void print_target_edit_page();
 
     // Перерисовывает вводимое значение уставки.
@@ -162,7 +181,9 @@ public:
 
     // Стрелка направления к уставке: +1 = наклонить в одну сторону (текущий
     // угол меньше уставки), -1 = в другую, 0 = в допуске (без стрелки).
-    void update_direction_arrow(int8_t direction);
+    // axis — какая ось сейчас измеряется: для X показываем влево/вправо,
+    // для Y — вверх/вниз (см. draw_direction_arrow_now()).
+    void update_direction_arrow(int8_t direction, MeasureAxis axis);
 
 private:
     // Стрелка направления — справа от числа (число печатается в полосе
@@ -175,8 +196,26 @@ private:
     // (Deg, dot_x=55, число заканчивается около x=92); для трёхразрядных
     // форматов (%, мм/м, dot_x=74, до x=110) стрелка перерисовывается поверх
     // каждый кадр в update_angle_value(), так что перекрытия не остаётся.
+    // ARROW_W/ARROW_H — размер области clear()+update() под стрелку, взят
+    // как максимум из обеих пар иконок (up/down 7x8, left/right 8x7-round-8),
+    // чтобы очищать с запасом независимо от того, какая пара сейчас активна.
     static constexpr int ARROW_X = 100, ARROW_Y = 24, ARROW_W = 8, ARROW_H = 8;
+    static constexpr int ARROW_UD_W = 7; // фактическая ширина иконок вверх/вниз
+    static constexpr int ARROW_LR_W = 8; // фактическая ширина иконок влево/вправо
 
     int8_t last_direction{0};
+    MeasureAxis last_axis{MeasureAxis::X};
     void draw_direction_arrow_now();
+
+    // Футер экрана ввода уставки: те же иконки вверх/вниз (zero/mode -
+    // инкремент/декремент разряда), что и везде, а справа (menu_btn) —
+    // стрелка вправо (переход к следующему разряду) везде, КРОМЕ последнего
+    // разряда (cursor_pos == 3, десятая доля) — там дальше двигаться
+    // некуда, следующий клик menu_btn уже сохраняет и выходит, поэтому
+    // вместо стрелки показываем текст "OK". last_edit_cursor — чтобы не
+    // перерисовывать футер (и не дёргать SPI за иконками) на каждый тик
+    // мигания цифры, а только когда реально сменился разряд; 0xFF —
+    // сентинел, гарантирующий отрисовку на первом вызове.
+    uint8_t last_edit_cursor{0xFF};
+    void draw_target_edit_footer(uint8_t cursor_pos);
 };

@@ -15,8 +15,17 @@ extern W25Q32Read extFlash;
 static uint8_t icon_buf[ICON_MAX_SIZE];
 
 static void drawIconFromFlash(GyverOLED<SSD1306_128x64, OLED_NO_BUFFER>& disp,
-                               int x, int y, uint32_t offset, uint32_t size,
+                               int x, int y, uint16_t offset, uint16_t size,
                                int width, int height) {
+    // offset/size раньше были uint32_t "на всякий случай", хотя реальные
+    // значения (макс. 1256, см. icons.h/SIZE_ICONS_TOTAL) с запасом
+    // умещаются в uint16_t — а readBlock() ниже и так принимает len как
+    // uint16_t. Функция вызывается 14 раз по всему файлу, на каждый вызов
+    // uint32_t аргумент стоит вдвое дороже по коду, чем uint16_t — при
+    // критичном остатке флеша сужение здесь даёт заметную экономию сразу
+    // на всех вызовах. ADDR_ICONS сам по себе uint32_t, так что
+    // "ADDR_ICONS + offset" по обычным правилам приведения типов всё равно
+    // считается как 32-битное сложение — корректный адрес для readBlock().
     extFlash.readBlock(ADDR_ICONS + offset, icon_buf, size);
     disp.drawBitmapRAM(x, y, icon_buf, width, height);
 }
@@ -98,10 +107,32 @@ void OLED::print_footer_labels(const __FlashStringHelper* left,
     oled.print(right);
 }
 
-void OLED::print_base_page_common()
+void OLED::print_base_page_common(bool menu_hold_enters_edit)
 {
     update_battery(true, true);
     oled.setScale(1);
+
+    // Верхняя строка футера (page 6, y=48..55) — левая часть: подпись
+    // КЛИКА zero_btn ("hold"/"HOLD", динамически, см. update_hold_indicator()
+    // ниже). Страница свободна на всех базовых экранах — номер угла
+    // занимает только y=16..47 (страницы 2..5, см. send_split_num_buffer).
+    // Слот mode_btn здесь убран (было "prev" — не поместилось нормально по
+    // месту и не так важно, как для zero/menu).
+    // menu_hold_enters_edit: удержание menu_btn переводит в редактирование
+    // уставки, но только в режиме MODE_90_TARGET (см. main.cpp) — в
+    // остальных режимах удержание menu_btn ничего не делает, подпись не
+    // рисуем, чтобы не обещать несуществующее действие.
+    oled.setCursor(0, 6);
+    oled.print(F("hold"));
+    if (menu_hold_enters_edit) {
+        oled.setCursor(100, 6);
+        oled.print(F("edit")); // menu_btn, удержание — редактировать уставку
+    }
+
+    // Нижняя строка (page 7, футер) — под "hold" на page 6 теперь видна
+    // подпись УДЕРЖАНИЯ zero_btn ("zero" — зануление угла), статичная (в
+    // отличие от верхней строки, не переключается). mode/menu — как раньше,
+    // подписи клика.
     print_footer_labels(F("zero"), F("mode"), F("menu"));
     oled.update();
 }
@@ -140,8 +171,11 @@ void OLED::change_revers()
 
 void OLED::update_hold_indicator(bool held)
 {
-    oled.setCursor(0, 7);
-    oled.print(held ? F("HOLD") : F("zero"));
+    // Раньше писала в page 7 — теперь подпись клика ("hold"/"HOLD") сверху
+    // (page 6), под ней статичная подпись удержания ("zero", page 7, см.
+    // print_base_page_common()).
+    oled.setCursor(0, 6);
+    oled.print(held ? F("HOLD") : F("hold"));
     oled.update();
 }
 
@@ -166,13 +200,28 @@ void OLED::apply_brightness(BrightnessLevel level)
 // терминах setCursor() (постраничные координаты). См. комментарий у
 // MENU_VISIBLE_ITEMS в oled.h — почему зазор сделан целой страницей, а не
 // в пикселях.
+void OLED::draw_updown_footer_icons()
+{
+    drawIconFromFlash(oled, 0,  56, ICON_OFF_ARROW_UP,   ICON_SIZE_ARROW_UP,   7, 8);
+    drawIconFromFlash(oled, 52, 56, ICON_OFF_ARROW_DOWN, ICON_SIZE_ARROW_DOWN, 7, 8);
+}
+
+void OLED::draw_ok_label()
+{
+    oled.setCursor(100, 7);
+    oled.print(F("OK"));
+}
+
 void OLED::print_menu_page(const char* const lines[], uint8_t line_count,
-                            uint8_t scroll_offset, uint8_t visible_cursor)
+                            uint8_t scroll_offset, uint8_t visible_cursor,
+                            bool editing_value)
 {
     oled.clear();
 
-    // Шрифт scale=1 (8px в высоту). На экран помещается до 6 пунктов
-    // (строки 0..5), строка 6 зарезервирована под футер.
+    // Шрифт scale=1 (8px в высоту). Показываем MENU_VISIBLE_ITEMS (3) пункта
+    // на страницах 0,2,4 с пустыми страницами-зазорами между ними (1,3);
+    // страницы 5,6 остаются пустыми перед футером (страница 7) — см.
+    // комментарий у MENU_VISIBLE_ITEMS в oled.h.
     oled.setScale(1);
 
     uint8_t visible_count = (line_count < MENU_VISIBLE_ITEMS) ? line_count : MENU_VISIBLE_ITEMS;
@@ -209,8 +258,19 @@ void OLED::print_menu_page(const char* const lines[], uint8_t line_count,
         }
     }
 
-    // Подписи кнопок внизу — на странице 7 (Y=56..63), рисуются напрямую как и раньше.
-    print_footer_labels(F("^"), F("v"), F("OK"));
+    // Подписи кнопок внизу — те же иконки стрелок, что и индикатор
+    // направления на основном экране (см. OLED_Degrees_90_Target), вместо
+    // прежних текстовых "^"/"v": при пролистывании списка (editing_value
+    // == false) — иконки вверх/вниз, при редактировании значения текущего
+    // пункта (editing_value == true) — иконки влево/вправо. Третья кнопка
+    // (menu -> OK) остаётся текстом, у неё нет парного направления.
+    if (editing_value) {
+        drawIconFromFlash(oled, 0,  56, ICON_OFF_ARROW_LEFT,  ICON_SIZE_ARROW_LEFT,  8, 8);
+        drawIconFromFlash(oled, 52, 56, ICON_OFF_ARROW_RIGHT, ICON_SIZE_ARROW_RIGHT, 8, 8);
+    } else {
+        draw_updown_footer_icons();
+    }
+    draw_ok_label();
     oled.update();
 }
 
@@ -278,6 +338,17 @@ void OLED::send_split_num_buffer(const char* left, const char* right, int dot_x)
 
     oled.sendBuffer();
     oled.setWindow(0, 0, 127, 7);
+
+    // ВАЖНО: setScale(3) выше иначе остаётся висеть до следующего явного
+    // setScale() где-то ещё в коде. Найденный баг: draw_target_edit_footer()
+    // печатает "OK" сразу после этой функции, ничего не переустанавливая —
+    // без сброса тут "OK" рисовался масштабом x3 (глиф 24px высотой) и либо
+    // вылезал за пределы видимой области, либо перекрывался следующей
+    // отрисовкой, что выглядело как "стрелка просто пропадает, OK не
+    // появляется". (В send_num_buffer() ту же защиту не ставим — оба её
+    // вызывающих ничего не печатают следом в том же кадре, там это было бы
+    // мёртвым кодом.)
+    oled.setScale(1);
 }
 
 //////////////// OLED DEGREE 360 MODE /////////////////////
@@ -394,7 +465,7 @@ void OLED_Degrees_90::print_unit_value(float value, uint8_t int_digits, float ma
 void OLED_Degrees_90_Target::print_base_page()
 {
     oled.clear();
-    print_base_page_common();
+    print_base_page_common(true); // удержание menu_btn здесь входит в редактирование уставки
     oled.setScale(1);
     oled.setCursor(46, 1);
     oled.print(F("90 TGT")); //показывать целевой угол.
@@ -407,8 +478,20 @@ void OLED_Degrees_90_Target::print_target_edit_page()
     oled.clear();
     update_battery(true, true);
     oled.setScale(1);
-    print_footer_labels(F("^"), F("v"), F("OK"));
+    last_edit_cursor = 0xFF; // сброс — гарантируем отрисовку футера на входе
     oled.update();
+}
+
+void OLED_Degrees_90_Target::draw_target_edit_footer(uint8_t cursor_pos)
+{
+    oled.clear(0, 56, 127, 63);
+    draw_updown_footer_icons();
+    if (cursor_pos < 3) {
+        drawIconFromFlash(oled, 100, 56, ICON_OFF_ARROW_RIGHT, ICON_SIZE_ARROW_RIGHT, 8, 8);
+    } else {
+        draw_ok_label();
+    }
+    oled.update(0, 56, 127, 63);
 }
 
 void OLED_Degrees_90_Target::update_target_edit(bool negative, uint8_t tens, uint8_t ones, uint8_t dec,
@@ -432,6 +515,15 @@ void OLED_Degrees_90_Target::update_target_edit(bool negative, uint8_t tens, uin
     char right[2] = { dec_ch, '\0' };
 
     send_split_num_buffer(left, right, SPLIT_DOT_X_DEFAULT);
+
+    // Футер зависит только от cursor_pos (какой разряд редактируется), а
+    // эта функция вызывается ещё и на каждый тик мигания (digit_visible
+    // меняется, cursor_pos — нет) — перерисовываем футер только при смене
+    // разряда, не на каждый блинк.
+    if (cursor_pos != last_edit_cursor) {
+        draw_target_edit_footer(cursor_pos);
+        last_edit_cursor = cursor_pos;
+    }
 }
 
 // Число (send_split_num_buffer) занимает всю полосу y=16..47 через
@@ -447,12 +539,34 @@ void OLED_Degrees_90_Target::update_angle_value(float angle)
 void OLED_Degrees_90_Target::draw_direction_arrow_now()
 {
     oled.clear(ARROW_X, ARROW_Y, ARROW_X + ARROW_W, ARROW_Y + ARROW_H);
-    if (last_direction > 0)      drawIconFromFlash(oled, ARROW_X, ARROW_Y, ICON_OFF_ARROW_UP, ICON_SIZE_ARROW_UP, ARROW_W, ARROW_H);
-    else if (last_direction < 0) drawIconFromFlash(oled, ARROW_X, ARROW_Y, ICON_OFF_ARROW_DOWN, ICON_SIZE_ARROW_DOWN, ARROW_W, ARROW_H);
+    if (last_direction != 0) {
+        // Раньше здесь было 4 отдельных вызова drawIconFromFlash (по одному
+        // на каждую комбинацию ось×знак) — на AVR каждый вызов с 6
+        // аргументами компилируется отдельно. Выбираем нужные offset/size/
+        // ширину заранее и вызываем drawIconFromFlash один раз — тот же
+        // результат, меньше кода (при критичном остатке флеша важно).
+        uint16_t off, size;
+        uint8_t  w;
+        if (last_axis == MeasureAxis::X) {
+            // Ось X (крен влево/вправо) — стрелка влево/вправо.
+            w = ARROW_LR_W;
+            if (last_direction > 0) { off = ICON_OFF_ARROW_RIGHT; size = ICON_SIZE_ARROW_RIGHT; }
+            else                    { off = ICON_OFF_ARROW_LEFT;  size = ICON_SIZE_ARROW_LEFT;  }
+        } else {
+            // Ось Y (тангаж вперёд/назад) — стрелка вверх/вниз. Маппинг
+            // подобран эмпирически (был инвертирован при первой реализации,
+            // см. Задачи.txt) — с осью X знак совпал сразу, с Y оказался
+            // зеркальным, поэтому здесь направление противоположно ветке X.
+            w = ARROW_UD_W;
+            if (last_direction > 0) { off = ICON_OFF_ARROW_DOWN; size = ICON_SIZE_ARROW_DOWN; }
+            else                    { off = ICON_OFF_ARROW_UP;   size = ICON_SIZE_ARROW_UP;   }
+        }
+        drawIconFromFlash(oled, ARROW_X, ARROW_Y, off, size, w, ARROW_H);
+    }
     oled.update(ARROW_X, ARROW_Y, ARROW_X + ARROW_W, ARROW_Y + ARROW_H);
 }
 
-void OLED_Degrees_90_Target::update_direction_arrow(int8_t direction)
+void OLED_Degrees_90_Target::update_direction_arrow(int8_t direction, MeasureAxis axis)
 {
     // Раньше здесь сразу вызывался draw_direction_arrow_now() — но эта
     // перерисовка тут же стиралась следующим вызовом update_angle_value()
@@ -460,6 +574,7 @@ void OLED_Degrees_90_Target::update_direction_arrow(int8_t direction)
     // стирается печатью числа — см. комментарий у update_angle_value ниже).
     // Получалось два clear()+drawIcon()+I2C update() за один DMP-кадр вместо
     // одного — отсюда видимое мерцание стрелки. Теперь здесь только
-    // запоминаем направление, а рисуем один раз — из update_angle_value().
+    // запоминаем направление и ось, а рисуем один раз — из update_angle_value().
     last_direction = direction;
+    last_axis = axis;
 }

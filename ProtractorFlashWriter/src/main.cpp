@@ -193,8 +193,11 @@ void setup() {
     ok &= writeBlobFromProgmem("mode_360",    ADDR_ICONS + 56,  mode_360_34x14_data,        68);
     ok &= writeBlobFromProgmem("mode_90",     ADDR_ICONS + 124, mode_90_24x14_data,         48);
     ok &= writeBlobFromProgmem("circle_15",   ADDR_ICONS + 172, circle_15x15_data,          30);
-    ok &= writeBlobFromProgmem("arrow_up",    ADDR_ICONS + 202, arrow_up_8x8_data,          8);
-    ok &= writeBlobFromProgmem("arrow_down",  ADDR_ICONS + 210, arrow_down_8x8_data,        8);
+    ok &= writeBlobFromProgmem("arrow_up",    ADDR_ICONS + 202, arrow_up_7x8_data,          7);
+    ok &= writeBlobFromProgmem("arrow_down",  ADDR_ICONS + 209, arrow_down_7x8_data,        7);
+    ok &= writeBlobFromProgmem("arrow_left",  ADDR_ICONS + 216, arrow_left_8x7_data,        8);
+    ok &= writeBlobFromProgmem("arrow_right", ADDR_ICONS + 224, arrow_right_8x7_data,       8);
+    ok &= writeBlobFromProgmem("frog_logo",   ADDR_ICONS + 232, Frog_128x64_data,           1024);
 
     if (!ok) {
         Serial.println(F("!!! Есть ошибки записи выше. Заголовок НЕ пишу. Останов."));

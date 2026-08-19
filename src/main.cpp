@@ -420,7 +420,7 @@ void render_menu() {
                                 ? (uint8_t)(menu_cursor - menu_scroll_offset)
                                 : 0;
 
-    oled->print_menu_page(menu_line_ptrs, MENU_ITEM_COUNT, menu_scroll_offset, visible_cursor);
+    oled->print_menu_page(menu_line_ptrs, MENU_ITEM_COUNT, menu_scroll_offset, visible_cursor, menu_editing_value);
 }
 
 void open_menu() {
@@ -436,6 +436,12 @@ void close_menu() {
     settings.save_persisted();
     menu_open          = false;
     menu_editing_value = false;
+    // Пока меню открыто, sleep_manager.update() не вызывается вообще (см.
+    // условие "!menu_open" в loop()) — таймер бездействия всё это время не
+    // сдвигается. Без явного сброса здесь первый же update() после закрытия
+    // меню видел бы старую метку времени и мог увести в сон почти сразу
+    // после выхода — на глаз выглядело бы как "уснул прямо в меню".
+    sleep_manager.reset_activity();
     oled->print_base_page();
     apply_battery_to_oled();
 }
@@ -527,6 +533,16 @@ void blink_led(uint8_t times) {
 
 // ─── SETUP ─────────────────────────────────────────────────────────────────
 void setup() {
+    // ВАЖНО: не полагаемся на дефолт ядра lgt8fx для analogRead(). Чип
+    // физически умеет 12 бит, но что вернёт analogRead() без явного вызова
+    // analogReadResolution() — зависит от версии установленного board
+    // package: в части версий ядра дефолтом было 12 бит (0..4095), в текущих
+    // релизах dbuezas/lgt8fx дефолт сделали 10 бит (0..1023) ради
+    // совместимости с классическим Arduino Uno. battery.cpp (ADC_MAX=1023)
+    // писан под 10 бит — фиксируем это явно, чтобы поведение не зависело от
+    // того, какая версия ядра сейчас установлена в PlatformIO.
+    analogReadResolution(10);
+
     settings.init_storage();
     settings.load_persisted();
 
@@ -582,6 +598,18 @@ void loop() {
     mode_btn.tick();
     zero_btn.tick();
 
+    // Таймер бездействия (сна) раньше сбрасывался только реальным движением
+    // (см. SleepManager::update()) — нажатия кнопок его не трогали вообще.
+    // isPress() больше нигде в проекте не используется (не путать с
+    // isClick()/isHold(), которые НУЖНЫ для действий кнопок и которые нельзя
+    // трогать второй раз без последствий — это consuming-флаги), поэтому его
+    // безопасно читать здесь просто как признак "было любое нажатие" —
+    // никакая другая часть кода этот флаг не потребляет и не полагается на
+    // его состояние.
+    if (zero_btn.isPress() || mode_btn.isPress() || menu_btn.isPress()) {
+        sleep_manager.reset_activity();
+    }
+
     if (editing_target) {
         if (zero_btn.isClick()) {
             adjust_edit_digit(+1);
@@ -629,24 +657,36 @@ void loop() {
                 handle_menu_button_click();
             }
         }
-        if (menu_btn.isHold()) {
+        // isHold() у GyverButton — НЕ одноразовый: возвращает true на каждый
+        // tick(), пока кнопка физически удерживается дольше таймаута, а не
+        // один раз в момент срабатывания. При коротком удержании разница не
+        // заметна, но чуть более долгое — и close_menu()/save_persisted()
+        // вызывались бы по нескольку раз подряд. isHolded() — одноразовый
+        // аналог (сбрасывает свой флаг после чтения), нужен именно он.
+        if (menu_btn.isHolded()) {
             close_menu();
         }
     } else {
         if (mode_btn.isClick()) {
             change_mode_next();
         }
-        if (mode_btn.isHold()) {
+        // См. комментарий выше про isHold() — с ним долгое удержание mode_btn
+        // прокручивало бы через НЕСКОЛЬКО предыдущих режимов за одно нажатие
+        // (change_mode_prev() вызывается на каждый tick, пока не отпустишь),
+        // а не переключало на один назад, как задумано.
+        if (mode_btn.isHolded()) {
             change_mode_prev();
         }
         if (zero_btn.isClick()) {
             angle_held = !angle_held;
             oled->update_hold_indicator(angle_held);
         }
-        if (zero_btn.isHold()) {
+        // Аналогично — без isHolded() request_zero() запускался бы заново
+        // на каждый tick все время удержания, а не один раз.
+        if (zero_btn.isHolded()) {
             mpu.request_zero();
         }
-        if (menu_btn.isHold() && current_mode == MODE_90_TARGET) {
+        if (menu_btn.isHolded() && current_mode == MODE_90_TARGET) {
             enter_target_edit();
         }
         if (menu_btn.isClick()) {
@@ -695,7 +735,7 @@ void loop() {
             if (!angle_held) {
                 int8_t direction = target_reached_now ? 0
                                    : (displayed_angle < t->target_angle_deg ? +1 : -1);
-                target_oled->update_direction_arrow(direction);
+                target_oled->update_direction_arrow(direction, settings.get_mpu_settings()->axis);
             }
         } else {
             target_reached = false;
@@ -728,6 +768,28 @@ void loop() {
             oled->set_power(true);
             mpu.wake();
             sleep_manager.reset_activity();
+
+            // Старый баг: нажатие, разбудившее МК, ФИЗИЧЕСКИ ещё удерживается
+            // (или как раз отпускается) уже после выхода из sleep_cpu() —
+            // вопреки комментарию в sleep_manager.h про "GButton не тикает и
+            // ничего не видит", как только tick() возобновляется в обычном
+            // loop(), библиотека честно ловит это как настоящий press->release
+            // и на следующем шаге выдаёт isClick()==true для той же самой
+            // кнопки — то есть клик срабатывает ещё раз, хотя пользователь
+            // всего лишь будил устройство. Дожидаемся физического отпускания
+            // всех трёх кнопок и сливаем накопленные флаги. resetStates()
+            // чистит их разом одним вызовом на кнопку (click/holded/press/
+            // release/счётчики) — дешевле по коду, чем isClick()+isHolded()
+            // по отдельности.
+            do {
+                menu_btn.tick();
+                mode_btn.tick();
+                zero_btn.tick();
+            } while (menu_btn.state() || mode_btn.state() || zero_btn.state());
+
+            menu_btn.resetStates();
+            mode_btn.resetStates();
+            zero_btn.resetStates();
         }
 
         mpu_flag = false;
