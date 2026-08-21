@@ -1,7 +1,11 @@
 #pragma once
 
 #include <Arduino.h>
+#if defined(USE_MICRO_WIRE)
+#include <microWire.h>
+#else
 #include <Wire.h>
+#endif
 #include <string.h>
 #include "GyverOLED.h"
 #include "settings.h"

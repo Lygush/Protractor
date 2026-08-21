@@ -85,7 +85,11 @@ THE SOFTWARE.
         #include "Arduino.h"
     #endif
     #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
-        #include <Wire.h>
+        #if defined(USE_MICRO_WIRE)
+            #include <microWire.h>
+        #else
+            #include <Wire.h>
+        #endif
     #endif
     #if I2CDEV_IMPLEMENTATION == I2CDEV_TEENSY_3X_WIRE
         #include <i2c_t3.h>
