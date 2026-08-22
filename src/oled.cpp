@@ -518,6 +518,13 @@ void OLED_Degrees_90_Target::print_base_page()
     drawIconFromFlash(oled, 52, 0, ICON_OFF_TGT, ICON_SIZE_TGT, 24, 14);
     draw_current_unit_icon(); // унаследован от OLED_Degrees_90 — та же единица измерения
     oled.update();
+
+    // Экран только что полностью очищен — сбрасываем кэш "уже нарисованной"
+    // стрелки сентинелом, иначе если желаемое состояние (last_direction/
+    // last_axis) совпадёт с тем, что было нарисовано ДО входа сюда, стрелка
+    // не перерисуется на первом же кадре и останется невидимой, хотя должна
+    // быть на экране.
+    drawn_direction = -2;
 }
 
 void OLED_Degrees_90_Target::print_target_edit_page()
@@ -573,17 +580,20 @@ void OLED_Degrees_90_Target::update_target_edit(bool negative, uint8_t tens, uin
     }
 }
 
-// Стрелка направления обновляется в паре с числом (одна логическая точка на
-// кадр), хотя технически больше не обязана — раньше она жила в той же
-// полосе y=16..47, которую целиком стирает createBuffer(...,fill=0) в
-// send_split_num_buffer(), и без немедленной перерисовки терялась бы на
-// следующий кадр. Сейчас стрелка в верхней строке (ARROW_Y=0, см. oled.h) и
-// от этой полосы не зависит; вызов здесь остаётся просто ради единого
-// I2C-апдейта на кадр вместо двух разнесённых.
+// Стрелка направления проверяется в паре с числом (одна логическая точка на
+// кадр) — но реальная перерисовка (clear+drawIcon+I2C update) происходит,
+// только если направление или ось разошлись с уже нарисованным на экране
+// (drawn_direction/drawn_axis, см. oled.h). Раньше draw_direction_arrow_now()
+// вызывался безусловно на каждый DMP-кадр, даже когда стрелка не менялась —
+// лишний I2C-трафик (Задачи.txt п.1.1: "обновлять только при изменении").
 void OLED_Degrees_90_Target::update_angle_value(float angle)
 {
     OLED_Degrees_90::update_angle_value(angle);
-    draw_direction_arrow_now();
+    if (last_direction != drawn_direction || last_axis != drawn_axis) {
+        draw_direction_arrow_now();
+        drawn_direction = last_direction;
+        drawn_axis      = last_axis;
+    }
 }
 
 void OLED_Degrees_90_Target::draw_direction_arrow_now()
@@ -617,15 +627,12 @@ void OLED_Degrees_90_Target::draw_direction_arrow_now()
 
 void OLED_Degrees_90_Target::update_direction_arrow(int8_t direction, MeasureAxis axis)
 {
-    // Раньше здесь сразу вызывался draw_direction_arrow_now() — но эта
-    // перерисовка тут же стиралась следующим вызовом update_angle_value()
-    // (в старой раскладке стрелка стояла в полосе y=16..47, которую целиком
-    // стирает печать числа). Получалось два clear()+drawIcon()+I2C update()
-    // за один DMP-кадр вместо одного — отсюда видимое мерцание стрелки.
-    // Стрелку перенесли в верхнюю строку (см. ARROW_Y в oled.h), но схема
-    // "запомнить здесь → нарисовать один раз в update_angle_value()"
-    // осталась — она в любом случае держит один I2C-апдейт на кадр вместо
-    // двух, независимо от того, в какой полосе экрана стрелка находится.
+    // Только запоминает желаемое состояние стрелки на этот кадр. Реальная
+    // перерисовка (и I2C-трафик) происходит в update_angle_value() — и
+    // только когда last_direction/last_axis разошлись с уже нарисованным
+    // (drawn_direction/drawn_axis, см. oled.h) — то есть стрелка сменила
+    // направление, появилась или исчезла (Задачи.txt п.1.1). Раньше
+    // перерисовка была безусловной на каждый кадр.
     last_direction = direction;
     last_axis = axis;
 }
