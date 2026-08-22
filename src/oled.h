@@ -32,7 +32,7 @@ public:
     OLED() = default;
     virtual ~OLED() = default;
 
-    void init(Display_settings* disp_settings);
+    void init(Display_settings* disp_settings, Mpu_settings* mpu_settings);
 
     // Рисует иконку батареи. blink_visible=false используется для фазы "погашено"
     // при мигании в состоянии LOW_BATTERY (см. вызывающий код в main.cpp).
@@ -114,6 +114,31 @@ protected:
     // (см. print_unit_value) и используется отдельная, более левая позиция.
     static constexpr int SPLIT_DOT_X_DEFAULT = 55;
 
+    // Общий "правый блок" верхней строки (y=0..13): иконка единицы измерения
+    // (крайняя справа, см. OLED_Degrees_90::draw_current_unit_icon()) и левее
+    // от неё, через зазор TOP_ROW_ICON_GAP, иконка текущей оси измерения (см.
+    // print_base_page_common() ниже). Иконки разной ширины (единица — 14 или
+    // 22px, ось — 14 или 15px), поэтому позиции считаются от правого края, а
+    // не заданы константами — иначе при смене единицы/оси между ними
+    // появлялся бы то слишком большой, то отрицательный зазор.
+    static constexpr int TOP_ROW_ICON_GAP = 3;
+    static constexpr int UNIT_ICON_RIGHT_EDGE = 125;
+    static constexpr uint8_t AXIS_ICON_W_X = 14, AXIS_ICON_W_Y = 15, AXIS_ICON_H = 14;
+
+    // Ширина иконки единицы измерения в текущем режиме — 14px везде, кроме
+    // мм/м (22px, см. ICON_SIZE_MM_PER_M). Переопределяется в OLED_Degrees_90
+    // (реально знает Unit); MODE_360 единиц не имеет и всегда показывает
+    // иконку градусов (14px) — значение по умолчанию здесь ей подходит.
+    virtual uint8_t current_unit_icon_width() const { return 14; }
+
+    // x левого края иконки оси измерения — общая точка отсчёта и для самой
+    // иконки (print_base_page_common), и для стрелки направления в TARGET
+    // режиме (см. OLED_Degrees_90_Target::arrow_geometry()), чтобы она вплотную
+    // примыкала к иконке оси с тем же отступом.
+    int axis_icon_x(uint8_t axis_icon_width) const {
+        return (UNIT_ICON_RIGHT_EDGE - current_unit_icon_width()) - TOP_ROW_ICON_GAP - axis_icon_width;
+    }
+
     // Общий рендер трёх подписей внизу экрана (позиции x=0/52/100, строка 7).
     // Используется и для базового экрана (zero/mode/menu), и для меню и
     // экрана ввода уставки (^/v/OK) — раньше это был дублированный код в
@@ -124,6 +149,7 @@ protected:
 
     GyverOLED<SSD1306_128x64, OLED_NO_BUFFER> oled;
     Display_settings* oled_settings{nullptr};
+    Mpu_settings* mpu_settings{nullptr}; // для индикации оси измерения (Задачи.txt п.2)
     bool revers{false};
 
     uint8_t      battery_percent{0};
@@ -147,6 +173,22 @@ public:
     void print_base_page() override;
     void update_angle_value(float angle) override;
 
+protected:
+    // Рисует иконку текущей единицы измерения (градусы/радианы/%/мм-на-метр,
+    // см. AngleUnit в settings.h) в верхнем правом слоте базового экрана.
+    // Общая для OLED_Degrees_90 и унаследованного OLED_Degrees_90_Target —
+    // единиц измерения у них одни и те же (см. Задачи.txt п.4), поэтому один
+    // метод вместо дублирования switch по AngleUnit в обоих print_base_page().
+    void draw_current_unit_icon();
+
+    // Единственная единица переменной ширины — мм/м (22px), остальные 14px
+    // (см. current_unit_icon_width() в базовом OLED). Используется и здесь,
+    // и в axis_icon_x()/arrow_geometry() — оттого вынесено отдельно, а не
+    // спрятано внутри draw_current_unit_icon().
+    uint8_t current_unit_icon_width() const override {
+        return (oled_settings && oled_settings->unit == AngleUnit::MM_PER_M) ? 22 : 14;
+    }
+
 private:
     // Форматирование под текущий Unit (см. update_angle_value): int_digits —
     // сколько целых разрядов у формата (1=Rad, 2=Deg, 3=%/мм-на-метр),
@@ -156,7 +198,8 @@ private:
 
 // Режим 90° + уставка целевого угла. update_angle_value() наследуется как
 // есть (тот же экран отображения угла), добавляется:
-// - своя print_base_page() — метка "90 TGT" вместо иконки режима;
+// - своя print_base_page() — иконка режима (ICON_OFF_TGT) вместо
+//   mode_360/mode_90;
 // - экран ввода уставки (print_target_edit_page() + update_target_edit()),
 //   в него переходят только из main.cpp по удержанию menu_btn, когда
 //   current_mode == MODE_90_TARGET.
@@ -164,10 +207,14 @@ class OLED_Degrees_90_Target : public OLED_Degrees_90 {
 public:
     void print_base_page() override;
 
-    // Оверрайд только чтобы после каждой перерисовки числа (send_split_num_buffer
-    // очищает всю строку 16..47 через createBuffer) перерисовать поверх нужную
-    // стрелку направления — иначе она стиралась бы на следующий кадр. Само
-    // форматирование не меняется, вызывается базовая версия.
+    // Оверрайд, чтобы отрисовка стрелки направления была привязана к тому же
+    // кадру, что и обновление числа — раньше (пока стрелка стояла в полосе
+    // y=16..47) это было обязательно, иначе её стирал буфер числа; сейчас
+    // стрелка в верхней строке (см. ARROW_Y ниже) и от этой полосы не
+    // зависит, но привязка к одному кадру всё равно уместна — стрелка и
+    // число меняются по одному и тому же DMP-тику, незачем разносить их
+    // I2C-апдейты по разным вызовам. Само форматирование числа не меняется,
+    // вызывается базовая версия.
     void update_angle_value(float angle) override;
 
     // Вызывается один раз при входе в редактирование — очищает экран и
@@ -190,26 +237,35 @@ public:
     void update_direction_arrow(int8_t direction, MeasureAxis axis);
 
 private:
-    // Стрелка направления — справа от числа (число печатается в полосе
-    // y=16..47, см. send_split_num_buffer). ARROW_Y обязан быть кратен 8
-    // (постранично выровнен) — стрелка рисуется напрямую (drawBitmapRAM без
-    // буфера), а прямая отрисовка при Y не кратном 8 в этой библиотеке даёт
-    // "мигающую"/битую картинку (та же причина, по которой пункты меню
-    // тоже сделаны строго постранично — см. MENU_VISIBLE_ITEMS в oled.h).
-    // x=100 подобран так, чтобы не пересекаться с самым частым форматом
-    // (Deg, dot_x=55, число заканчивается около x=92); для трёхразрядных
-    // форматов (%, мм/м, dot_x=74, до x=110) стрелка перерисовывается поверх
-    // каждый кадр в update_angle_value(), так что перекрытия не остаётся.
-    // ARROW_W/ARROW_H — размер области clear()+update() под стрелку, взят
-    // как максимум из обеих пар иконок (up/down 7x8, left/right 8x7-round-8),
-    // чтобы очищать с запасом независимо от того, какая пара сейчас активна.
-    static constexpr int ARROW_X = 100, ARROW_Y = 24, ARROW_W = 8, ARROW_H = 8;
+    // Стрелка направления перенесена в верхнюю строку (y=0, та же полоса,
+    // что иконки режима/оси/единицы измерения) — раньше стояла в полосе
+    // y=16..47 (см. send_split_num_buffer), которую целиком стирает и
+    // перерисовывает буфер числа на каждый кадр; из-за этого требовалась
+    // принудительная перерисовка стрелки следом (см. update_angle_value)
+    // и оставался риск краткого мигания между этими двумя I2C-апдейтами.
+    // В верхней строке этой полосы нет — конфликта с числом больше нет.
+    // X считается на лету в arrow_geometry(): стрелка примыкает вплотную
+    // (через TOP_ROW_ICON_GAP) слева к иконке оси измерения, а та, в свою
+    // очередь, — к иконке единицы измерения (см. axis_icon_x() в oled.h) —
+    // единственный способ не наезжать друг на друга, когда обе иконки разной
+    // ширины меняются независимо (Unit — через меню, Axis — тоже через меню).
+    static constexpr int ARROW_Y = 0, ARROW_H = 8;
     static constexpr int ARROW_UD_W = 7; // фактическая ширина иконок вверх/вниз
     static constexpr int ARROW_LR_W = 8; // фактическая ширина иконок влево/вправо
 
     int8_t last_direction{0};
     MeasureAxis last_axis{MeasureAxis::X};
     void draw_direction_arrow_now();
+
+    // x левого края и ширина стрелки для текущей оси (last_axis) — ось X
+    // меряется влево/вправо (LR, 8px), Y — вверх/вниз (UD, 7px). Общая точка
+    // для clear()/drawIconFromFlash()/update(), чтобы не рассинхронизировать
+    // область стирания с областью отрисовки при смене оси или единицы.
+    void arrow_geometry(int& x, uint8_t& w) const {
+        w = (last_axis == MeasureAxis::X) ? ARROW_LR_W : ARROW_UD_W;
+        uint8_t axis_w = (last_axis == MeasureAxis::X) ? AXIS_ICON_W_X : AXIS_ICON_W_Y;
+        x = axis_icon_x(axis_w) - TOP_ROW_ICON_GAP - w;
+    }
 
     // Футер экрана ввода уставки: те же иконки вверх/вниз (zero/mode -
     // инкремент/декремент разряда), что и везде, а справа (menu_btn) —

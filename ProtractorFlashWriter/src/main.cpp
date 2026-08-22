@@ -192,12 +192,18 @@ void setup() {
     ok &= writeBlobFromProgmem("bat_segment", ADDR_ICONS + 50,  battery_segment_3x12_data,  6);
     ok &= writeBlobFromProgmem("mode_360",    ADDR_ICONS + 56,  mode_360_34x14_data,        68);
     ok &= writeBlobFromProgmem("mode_90",     ADDR_ICONS + 124, mode_90_24x14_data,         48);
-    ok &= writeBlobFromProgmem("circle_15",   ADDR_ICONS + 172, circle_15x15_data,          30);
-    ok &= writeBlobFromProgmem("arrow_up",    ADDR_ICONS + 202, arrow_up_7x8_data,          7);
-    ok &= writeBlobFromProgmem("arrow_down",  ADDR_ICONS + 209, arrow_down_7x8_data,        7);
-    ok &= writeBlobFromProgmem("arrow_left",  ADDR_ICONS + 216, arrow_left_8x7_data,        8);
-    ok &= writeBlobFromProgmem("arrow_right", ADDR_ICONS + 224, arrow_right_8x7_data,       8);
-    ok &= writeBlobFromProgmem("frog_logo",   ADDR_ICONS + 232, Frog_128x64_data,           1024);
+    ok &= writeBlobFromProgmem("circle_14",   ADDR_ICONS + 172, circle_14x14_data,          28);
+    ok &= writeBlobFromProgmem("pi_14",       ADDR_ICONS + 200, pi_14x14_data,              28);
+    ok &= writeBlobFromProgmem("percent_14",  ADDR_ICONS + 228, percent_14x14_data,         28);
+    ok &= writeBlobFromProgmem("mm_m_22",     ADDR_ICONS + 256, mm_m_22x14_data,            44);
+    ok &= writeBlobFromProgmem("arrow_up",    ADDR_ICONS + 300, arrow_up_7x8_data,          7);
+    ok &= writeBlobFromProgmem("arrow_down",  ADDR_ICONS + 307, arrow_down_7x8_data,        7);
+    ok &= writeBlobFromProgmem("arrow_left",  ADDR_ICONS + 314, arrow_left_8x7_data,        8);
+    ok &= writeBlobFromProgmem("arrow_right", ADDR_ICONS + 322, arrow_right_8x7_data,       8);
+    ok &= writeBlobFromProgmem("tgt_24x14",   ADDR_ICONS + 330, tgt_24x14_data,             48);
+    ok &= writeBlobFromProgmem("x_axe_14x14", ADDR_ICONS + 378, x_axe_14x14_data,           28);
+    ok &= writeBlobFromProgmem("y_axe_15x14", ADDR_ICONS + 406, y_axe_15x14_data,           30);
+    ok &= writeBlobFromProgmem("frog_logo",   ADDR_ICONS + 436, Frog_128x64_data,           1024);
 
     if (!ok) {
         Serial.println(F("!!! Есть ошибки записи выше. Заголовок НЕ пишу. Останов."));

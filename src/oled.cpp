@@ -30,7 +30,7 @@ static void drawIconFromFlash(GyverOLED<SSD1306_128x64, OLED_NO_BUFFER>& disp,
     disp.drawBitmapRAM(x, y, icon_buf, width, height);
 }
 
-void OLED::init(Display_settings *disp_settings)
+void OLED::init(Display_settings *disp_settings, Mpu_settings *mpu_disp_settings)
 {
     oled.init();
     delay(100);
@@ -44,6 +44,7 @@ void OLED::init(Display_settings *disp_settings)
     oled.clear();
     oled.update();
     oled_settings = disp_settings;
+    mpu_settings = mpu_disp_settings;
 }
 
 void OLED::update_battery(bool blink_visible, bool force_redraw)
@@ -127,6 +128,24 @@ void OLED::print_base_page_common(bool menu_hold_enters_edit)
     if (menu_hold_enters_edit) {
         oled.setCursor(100, 6);
         oled.print(F("edit")); // menu_btn, удержание — редактировать уставку
+    }
+
+    // Индикация текущей оси измерения (Задачи.txt п.2) — общая для всех
+    // режимов (X/Y влияет и на MODE_360, и на MODE_90/MODE_90_TARGET, см.
+    // current_axis() в main.cpp), поэтому рисуется здесь один раз вместо
+    // повторения в каждом print_base_page(). X считается динамически через
+    // axis_icon_x() — вплотную (через TOP_ROW_ICON_GAP) слева от иконки
+    // единицы измерения, а не фиксированным слотом: иконка оси (14 или 15px)
+    // и иконка единицы (14 или 22px) обе переменной ширины, и подгонка
+    // "на глаз" под самый широкий случай оставляла бы разный зазор в
+    // остальных комбинациях.
+    if (mpu_settings) {
+        bool is_y = (mpu_settings->axis == MeasureAxis::Y);
+        uint8_t axis_w = is_y ? AXIS_ICON_W_Y : AXIS_ICON_W_X;
+        drawIconFromFlash(oled, axis_icon_x(axis_w), 0,
+                           is_y ? ICON_OFF_Y_AXE : ICON_OFF_X_AXE,
+                           is_y ? ICON_SIZE_Y_AXE : ICON_SIZE_X_AXE,
+                           axis_w, AXIS_ICON_H);
     }
 
     // Нижняя строка (page 7, футер) — под "hold" на page 6 теперь видна
@@ -358,7 +377,10 @@ void OLED_Degrees_360::print_base_page()
     oled.clear();
     print_base_page_common();
     drawIconFromFlash(oled, 47, 0, ICON_OFF_MODE_360, ICON_SIZE_MODE_360, 34, 14);
-    drawIconFromFlash(oled, 110, 0, ICON_OFF_CIRCLE_15, ICON_SIZE_CIRCLE_15, 15, 15);
+    // MODE_360 не использует AngleUnit (всегда полный оборот в градусах,
+    // см. settings.h) — иконка градусов здесь статична, в отличие от
+    // OLED_Degrees_90::draw_current_unit_icon().
+    drawIconFromFlash(oled, 111, 0, ICON_OFF_CIRCLE_14, ICON_SIZE_CIRCLE_14, 14, 14);
     oled.update();
 }
 
@@ -390,8 +412,34 @@ void OLED_Degrees_90::print_base_page()
     oled.clear();
     print_base_page_common();
     drawIconFromFlash(oled, 52, 0, ICON_OFF_MODE_90, ICON_SIZE_MODE_90, 24, 14);
-    drawIconFromFlash(oled, 110, 0, ICON_OFF_CIRCLE_15, ICON_SIZE_CIRCLE_15, 15, 15);
+    draw_current_unit_icon();
     oled.update();
+}
+
+// Единая точка выбора иконки единицы измерения — используется и здесь, и в
+// OLED_Degrees_90_Target::print_base_page() (унаследован, см. oled.h).
+// MODE_360 сюда не входит: там единиц измерения нет (всегда 0..360°),
+// иконка градусов у него рисуется отдельным прямым вызовом (см. ниже).
+void OLED_Degrees_90::draw_current_unit_icon()
+{
+    uint16_t off, size;
+    uint8_t width;
+    switch (oled_settings ? oled_settings->unit : AngleUnit::DEGREES) {
+        case AngleUnit::RADIANS:
+            off = ICON_OFF_PI;      size = ICON_SIZE_PI;      width = 14;
+            break;
+        case AngleUnit::PERCENT:
+            off = ICON_OFF_PERCENT; size = ICON_SIZE_PERCENT; width = 14;
+            break;
+        case AngleUnit::MM_PER_M:
+            off = ICON_OFF_MM_PER_M; size = ICON_SIZE_MM_PER_M; width = 22;
+            break;
+        case AngleUnit::DEGREES:
+        default:
+            off = ICON_OFF_CIRCLE_14; size = ICON_SIZE_CIRCLE_14; width = 14;
+            break;
+    }
+    drawIconFromFlash(oled, UNIT_ICON_RIGHT_EDGE - width, 0, off, size, width, 14);
 }
 
 // value приходит уже в конечных единицах текущего Unit (см.
@@ -467,9 +515,8 @@ void OLED_Degrees_90_Target::print_base_page()
     oled.clear();
     print_base_page_common(true); // удержание menu_btn здесь входит в редактирование уставки
     oled.setScale(1);
-    oled.setCursor(46, 1);
-    oled.print(F("90 TGT")); //показывать целевой угол.
-    drawIconFromFlash(oled, 110, 0, ICON_OFF_CIRCLE_15, ICON_SIZE_CIRCLE_15, 15, 15);
+    drawIconFromFlash(oled, 52, 0, ICON_OFF_TGT, ICON_SIZE_TGT, 24, 14);
+    draw_current_unit_icon(); // унаследован от OLED_Degrees_90 — та же единица измерения
     oled.update();
 }
 
@@ -526,10 +573,13 @@ void OLED_Degrees_90_Target::update_target_edit(bool negative, uint8_t tens, uin
     }
 }
 
-// Число (send_split_num_buffer) занимает всю полосу y=16..47 через
-// createBuffer(...,fill=0) и на каждый кадр стирает всё, что было в этой
-// полосе, включая область стрелки — поэтому стрелку перерисовываем здесь же,
-// сразу после базового форматирования числа (см. update_angle_value ниже).
+// Стрелка направления обновляется в паре с числом (одна логическая точка на
+// кадр), хотя технически больше не обязана — раньше она жила в той же
+// полосе y=16..47, которую целиком стирает createBuffer(...,fill=0) в
+// send_split_num_buffer(), и без немедленной перерисовки терялась бы на
+// следующий кадр. Сейчас стрелка в верхней строке (ARROW_Y=0, см. oled.h) и
+// от этой полосы не зависит; вызов здесь остаётся просто ради единого
+// I2C-апдейта на кадр вместо двух разнесённых.
 void OLED_Degrees_90_Target::update_angle_value(float angle)
 {
     OLED_Degrees_90::update_angle_value(angle);
@@ -538,7 +588,9 @@ void OLED_Degrees_90_Target::update_angle_value(float angle)
 
 void OLED_Degrees_90_Target::draw_direction_arrow_now()
 {
-    oled.clear(ARROW_X, ARROW_Y, ARROW_X + ARROW_W, ARROW_Y + ARROW_H);
+    int x; uint8_t w;
+    arrow_geometry(x, w);
+    oled.clear(x, ARROW_Y, x + w, ARROW_Y + ARROW_H);
     if (last_direction != 0) {
         // Раньше здесь было 4 отдельных вызова drawIconFromFlash (по одному
         // на каждую комбинацию ось×знак) — на AVR каждый вызов с 6
@@ -546,10 +598,8 @@ void OLED_Degrees_90_Target::draw_direction_arrow_now()
         // ширину заранее и вызываем drawIconFromFlash один раз — тот же
         // результат, меньше кода (при критичном остатке флеша важно).
         uint16_t off, size;
-        uint8_t  w;
         if (last_axis == MeasureAxis::X) {
             // Ось X (крен влево/вправо) — стрелка влево/вправо.
-            w = ARROW_LR_W;
             if (last_direction > 0) { off = ICON_OFF_ARROW_RIGHT; size = ICON_SIZE_ARROW_RIGHT; }
             else                    { off = ICON_OFF_ARROW_LEFT;  size = ICON_SIZE_ARROW_LEFT;  }
         } else {
@@ -557,24 +607,25 @@ void OLED_Degrees_90_Target::draw_direction_arrow_now()
             // подобран эмпирически (был инвертирован при первой реализации,
             // см. Задачи.txt) — с осью X знак совпал сразу, с Y оказался
             // зеркальным, поэтому здесь направление противоположно ветке X.
-            w = ARROW_UD_W;
             if (last_direction > 0) { off = ICON_OFF_ARROW_DOWN; size = ICON_SIZE_ARROW_DOWN; }
             else                    { off = ICON_OFF_ARROW_UP;   size = ICON_SIZE_ARROW_UP;   }
         }
-        drawIconFromFlash(oled, ARROW_X, ARROW_Y, off, size, w, ARROW_H);
+        drawIconFromFlash(oled, x, ARROW_Y, off, size, w, ARROW_H);
     }
-    oled.update(ARROW_X, ARROW_Y, ARROW_X + ARROW_W, ARROW_Y + ARROW_H);
+    oled.update(x, ARROW_Y, x + w, ARROW_Y + ARROW_H);
 }
 
 void OLED_Degrees_90_Target::update_direction_arrow(int8_t direction, MeasureAxis axis)
 {
     // Раньше здесь сразу вызывался draw_direction_arrow_now() — но эта
     // перерисовка тут же стиралась следующим вызовом update_angle_value()
-    // (он обязан перерисовать стрелку заново, т.к. полоса y=16..47 целиком
-    // стирается печатью числа — см. комментарий у update_angle_value ниже).
-    // Получалось два clear()+drawIcon()+I2C update() за один DMP-кадр вместо
-    // одного — отсюда видимое мерцание стрелки. Теперь здесь только
-    // запоминаем направление и ось, а рисуем один раз — из update_angle_value().
+    // (в старой раскладке стрелка стояла в полосе y=16..47, которую целиком
+    // стирает печать числа). Получалось два clear()+drawIcon()+I2C update()
+    // за один DMP-кадр вместо одного — отсюда видимое мерцание стрелки.
+    // Стрелку перенесли в верхнюю строку (см. ARROW_Y в oled.h), но схема
+    // "запомнить здесь → нарисовать один раз в update_angle_value()"
+    // осталась — она в любом случае держит один I2C-апдейт на кадр вместо
+    // двух, независимо от того, в какой полосе экрана стрелка находится.
     last_direction = direction;
     last_axis = axis;
 }

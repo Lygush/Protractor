@@ -500,7 +500,7 @@ void construct_oled_for_mode(DisplayMode mode) {
     target_reached = false;
     angle_held     = false;
 
-    oled->init(settings.get_display_settings());
+    oled->init(settings.get_display_settings(), settings.get_mpu_settings());
     oled->apply_brightness(settings.get_display_settings()->brightness);
     oled->print_base_page();
     apply_battery_to_oled();
@@ -558,7 +558,7 @@ void setup() {
     oled = new (&get_storage().d90) OLED_Degrees_90();
     delay(500);
 
-    oled->init(settings.get_display_settings());
+    oled->init(settings.get_display_settings(), settings.get_mpu_settings());
     oled->apply_brightness(settings.get_display_settings()->brightness);
     blink_led(2);
 
